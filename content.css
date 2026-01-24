@@ -1,0 +1,154 @@
+:root {
+  --imh-bg: #0b1020;
+  --imh-panel: #12172b;
+  --imh-accent: #ffbf3c;
+  --imh-accent-dark: #d89600;
+  --imh-text: #f5f7ff;
+  --imh-muted: #9aa3c7;
+  --imh-border: rgba(255, 255, 255, 0.12);
+  --imh-shadow: 0 18px 40px rgba(11, 16, 32, 0.45);
+}
+
+#imh-save-button {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 2147483647;
+  background: linear-gradient(135deg, var(--imh-accent), #ff7a3c);
+  color: #1a1200;
+  border: none;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 12px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: var(--imh-shadow);
+}
+
+#imh-save-button:hover {
+  filter: brightness(1.04);
+}
+
+#imh-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(11, 16, 32, 0.45);
+  z-index: 2147483646;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  color: var(--imh-text);
+  font-size: 18px;
+  letter-spacing: 0.2px;
+}
+
+.imh-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+}
+
+.imh-modal__panel {
+  width: min(640px, 92vw);
+  background: var(--imh-panel);
+  color: var(--imh-text);
+  border-radius: 18px;
+  padding: 22px;
+  box-shadow: var(--imh-shadow);
+  border: 1px solid var(--imh-border);
+}
+
+.imh-modal__title {
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+
+.imh-modal__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.imh-modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.imh-modal__field label {
+  font-size: 12px;
+  color: var(--imh-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.imh-modal__field input,
+.imh-modal__field textarea,
+.imh-modal__field select {
+  background: #0f1426;
+  border: 1px solid var(--imh-border);
+  color: var(--imh-text);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.imh-modal__field textarea {
+  min-height: 80px;
+}
+
+.imh-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.imh-button {
+  border-radius: 999px;
+  padding: 10px 16px;
+  border: 1px solid var(--imh-border);
+  background: transparent;
+  color: var(--imh-text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.imh-button--primary {
+  background: var(--imh-accent);
+  color: #241600;
+  border: none;
+}
+
+.imh-toast {
+  position: fixed;
+  right: 22px;
+  bottom: 84px;
+  z-index: 2147483647;
+  background: #1e253f;
+  color: var(--imh-text);
+  padding: 10px 14px;
+  border-radius: 10px;
+  box-shadow: var(--imh-shadow);
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  font-size: 13px;
+  border: 1px solid var(--imh-border);
+}
+
+@media (max-width: 640px) {
+  #imh-save-button {
+    right: 14px;
+    bottom: 14px;
+  }
+
+  .imh-modal__grid {
+    grid-template-columns: 1fr;
+  }
+}

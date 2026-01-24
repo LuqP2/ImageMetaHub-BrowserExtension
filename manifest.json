@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Image MetaHub Browser",
+  "version": "0.1.0",
+  "description": "Save online AI images with MetaHub-compatible sidecar metadata.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://*.openai.com/*",
+        "https://gemini.google.com/*",
+        "https://grok.com/*",
+        "https://x.ai/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
+  ]
+}

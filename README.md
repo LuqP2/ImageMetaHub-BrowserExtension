@@ -1,14 +1,13 @@
 # Image MetaHub Browser (MVP)
 
-A minimal MV3 browser extension that saves online AI images alongside a MetaHub-compatible sidecar JSON.
+A minimal MV3 browser extension that saves online AI images with embedded MetaHub-compatible PNG metadata.
 
 ## What it does
 
 - Adds a "Save to MetaHub" button on supported sites
 - Lets you click an image, fill prompt/model fields, and download:
-  - `imh-<provider>-<timestamp>.png`
-  - `imh-<provider>-<timestamp>.json`
-- The JSON format matches the Easy Diffusion sidecar parser in Image MetaHub
+  - `imh-<provider>-<timestamp>.png` with embedded `tEXt` metadata
+- The metadata format mirrors the A1111/Easy Diffusion `parameters` string
 
 ## Supported sites (initial)
 
@@ -26,9 +25,8 @@ A minimal MV3 browser extension that saves online AI images alongside a MetaHub-
 
 ## Notes
 
-- This MVP stores metadata in a `.json` sidecar, not inside the PNG.
-- The app will read it in the Electron build when the image and JSON are in the same folder.
-- If the image download fails, the script falls back to downloading the image URL directly.
+- This MVP embeds metadata into PNGs (tEXt `parameters` chunk).
+- If the image is not PNG, the extension tries to convert to PNG. If conversion fails, it saves without metadata.
 
 ## Next steps
 

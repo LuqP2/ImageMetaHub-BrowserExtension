@@ -152,6 +152,12 @@
             <textarea name="negativePrompt" placeholder="Optional"></textarea>
           </div>
         </div>
+        <div class="imh-modal__field" style="grid-column: 1 / -1;">
+          <label>
+            <input type="checkbox" name="sidecarFallback" checked />
+            Save .json sidecar if embed fails
+          </label>
+        </div>
         <div class="imh-modal__actions">
           <button class="imh-button" type="button" data-action="cancel">Cancel</button>
           <button class="imh-button imh-button--primary" type="button" data-action="save">Save</button>
@@ -204,8 +210,9 @@
       captured_at: new Date().toISOString()
     };
 
+    const sidecarFallback = isChecked(form, 'sidecarFallback');
     closeModal();
-    downloadWithSidecar(imageUrl, metadata);
+    downloadWithMetadata(imageUrl, metadata, sidecarFallback);
   }
 
   function getFieldValue(root, name) {
@@ -224,24 +231,54 @@
     return Number.isFinite(num) ? num : undefined;
   }
 
-  async function downloadWithSidecar(imageUrl, metadata) {
+  function isChecked(root, name) {
+    const field = root.querySelector(`[name="${name}"]`);
+    if (!field) {
+      return false;
+    }
+    return Boolean(field.checked);
+  }
+
+  async function downloadWithMetadata(imageUrl, metadata, sidecarFallback) {
     const baseName = buildBaseName(metadata);
     const imageResult = await fetchImageBlob(imageUrl);
     const extension = inferExtension(imageResult && imageResult.type, imageUrl);
-    const imageFilename = `${baseName}.${extension}`;
-    const jsonFilename = `${baseName}.json`;
 
-    if (imageResult && imageResult.blob) {
-      triggerDownload(URL.createObjectURL(imageResult.blob), imageFilename, true);
-    } else {
-      triggerDownload(imageUrl, imageFilename, false);
+    if (!imageResult || !imageResult.blob) {
+      triggerDownload(imageUrl, `${baseName}.${extension}`, false);
+      if (sidecarFallback) {
+        saveSidecar(baseName, metadata);
+      }
+      showToast('Saved image (metadata unavailable: fetch blocked)');
+      return;
     }
 
-    const jsonPayload = JSON.stringify(metadata, null, 2);
-    const jsonBlob = new Blob([jsonPayload], { type: 'application/json' });
-    triggerDownload(URL.createObjectURL(jsonBlob), jsonFilename, true);
+    let blob = imageResult.blob;
+    let outputExtension = extension;
 
-    showToast('Saved image + metadata to Downloads');
+    if (!isPngBlob(blob)) {
+      const converted = await convertToPngBlob(blob);
+      if (converted) {
+        blob = converted;
+        outputExtension = 'png';
+      }
+    }
+
+    if (isPngBlob(blob)) {
+      const buffer = await blob.arrayBuffer();
+      const parameters = buildParametersString(metadata);
+      const embedded = embedPngTextChunk(buffer, 'parameters', parameters);
+      const outBlob = new Blob([embedded], { type: 'image/png' });
+      triggerDownload(URL.createObjectURL(outBlob), `${baseName}.png`, true);
+      showToast('Saved PNG with embedded metadata');
+      return;
+    }
+
+    triggerDownload(URL.createObjectURL(blob), `${baseName}.${outputExtension}`, true);
+    if (sidecarFallback) {
+      saveSidecar(baseName, metadata);
+    }
+    showToast('Saved image (non-PNG, metadata not embedded)');
   }
 
   function triggerDownload(url, filename, revoke) {
@@ -290,6 +327,170 @@
 
     return 'png';
   }
+
+  function saveSidecar(baseName, metadata) {
+    const jsonFilename = `${baseName}.json`;
+    const jsonPayload = JSON.stringify(metadata, null, 2);
+    const jsonBlob = new Blob([jsonPayload], { type: 'application/json' });
+    triggerDownload(URL.createObjectURL(jsonBlob), jsonFilename, true);
+  }
+
+  function isPngBlob(blob) {
+    return blob && blob.type === 'image/png';
+  }
+
+  async function convertToPngBlob(blob) {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        return null;
+      }
+      ctx.drawImage(bitmap, 0, 0);
+      return await new Promise((resolve) => {
+        canvas.toBlob((pngBlob) => resolve(pngBlob || null), 'image/png');
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  function buildParametersString(metadata) {
+    const prompt = metadata.prompt || '';
+    const negative = metadata.negative_prompt || '';
+    const params = [];
+
+    if (metadata.steps) {
+      params.push(`Steps: ${metadata.steps}`);
+    }
+    if (metadata.sampler) {
+      params.push(`Sampler: ${metadata.sampler}`);
+    }
+    if (metadata.cfg_scale) {
+      params.push(`CFG scale: ${metadata.cfg_scale}`);
+    }
+    if (metadata.seed !== undefined) {
+      params.push(`Seed: ${metadata.seed}`);
+    }
+    if (metadata.width && metadata.height) {
+      params.push(`Size: ${metadata.width}x${metadata.height}`);
+    }
+    if (metadata.model) {
+      params.push(`Model: ${metadata.model}`);
+    }
+    if (metadata.provider) {
+      params.push(`Generator: ${metadata.provider}`);
+    }
+
+    const lines = [prompt.trim()];
+    if (negative.trim()) {
+      lines.push(`Negative prompt: ${negative.trim()}`);
+    }
+    if (params.length) {
+      lines.push(params.join(', '));
+    }
+    return lines.filter(Boolean).join('\n');
+  }
+
+  function embedPngTextChunk(buffer, keyword, text) {
+    const bytes = new Uint8Array(buffer);
+    const data = new TextEncoder().encode(`${keyword}\0${text}`);
+    const type = toBytes('tEXt');
+    const chunk = buildPngChunk(type, data);
+
+    let offset = 8;
+    while (offset + 8 <= bytes.length) {
+      const length = readUint32(bytes, offset);
+      const chunkType = readChunkType(bytes, offset);
+      const totalLength = 12 + length;
+      if (chunkType === 'IEND') {
+        return concatUint8(bytes.slice(0, offset), chunk, bytes.slice(offset));
+      }
+      offset += totalLength;
+    }
+    return bytes;
+  }
+
+  function buildPngChunk(typeBytes, dataBytes) {
+    const length = dataBytes.length;
+    const chunk = new Uint8Array(12 + length);
+    writeUint32(chunk, 0, length);
+    chunk.set(typeBytes, 4);
+    chunk.set(dataBytes, 8);
+    const crc = crc32(concatUint8(typeBytes, dataBytes));
+    writeUint32(chunk, 8 + length, crc);
+    return chunk;
+  }
+
+  function readChunkType(bytes, offset) {
+    return String.fromCharCode(
+      bytes[offset + 4],
+      bytes[offset + 5],
+      bytes[offset + 6],
+      bytes[offset + 7]
+    );
+  }
+
+  function readUint32(bytes, offset) {
+    return (
+      (bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]
+    ) >>> 0;
+  }
+
+  function writeUint32(bytes, offset, value) {
+    bytes[offset] = (value >>> 24) & 0xff;
+    bytes[offset + 1] = (value >>> 16) & 0xff;
+    bytes[offset + 2] = (value >>> 8) & 0xff;
+    bytes[offset + 3] = value & 0xff;
+  }
+
+  function toBytes(text) {
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i += 1) {
+      bytes[i] = text.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  function concatUint8(...arrays) {
+    let total = 0;
+    arrays.forEach((arr) => {
+      total += arr.length;
+    });
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    arrays.forEach((arr) => {
+      merged.set(arr, offset);
+      offset += arr.length;
+    });
+    return merged;
+  }
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) {
+      crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      let c = i;
+      for (let k = 0; k < 8; k += 1) {
+        c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+      table[i] = c >>> 0;
+    }
+    return table;
+  })();
 
   function buildBaseName(metadata) {
     const provider = metadata.provider || 'online';

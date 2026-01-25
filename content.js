@@ -16,7 +16,7 @@
     button.type = 'button';
     button.textContent = 'Save to MetaHub';
     button.addEventListener('click', startPickMode);
-    document.documentElement.appendChild(button);
+    (document.documentElement || document.body || document).appendChild(button);
   }
 
   function startPickMode() {
@@ -64,8 +64,8 @@
       return;
     }
 
-    const imageEl = findImageElement(target);
-    if (!imageEl) {
+    const imageContext = findImageContext(event);
+    if (!imageContext) {
       showOverlay('Not an image. Click an image to save.');
       return;
     }
@@ -74,33 +74,77 @@
     event.stopPropagation();
 
     stopPickMode();
-    openMetadataModal(imageEl);
+    openMetadataModal(imageContext);
   }
 
-  function findImageElement(target) {
-    if (target.tagName && target.tagName.toLowerCase() === 'img') {
-      return target;
+  function findImageContext(event) {
+    const target = event.target;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+
+    for (const entry of path) {
+      if (entry instanceof HTMLImageElement) {
+        return buildImageContextFromImg(entry);
+      }
     }
 
-    const img = target.closest('img');
-    if (img) {
-      return img;
+    if (target instanceof HTMLImageElement) {
+      return buildImageContextFromImg(target);
     }
 
-    const nested = target.querySelector && target.querySelector('img');
-    if (nested) {
-      return nested;
+    const elements = document.elementsFromPoint(event.clientX, event.clientY);
+    for (const el of elements) {
+      if (el instanceof HTMLImageElement) {
+        return buildImageContextFromImg(el);
+      }
+    }
+
+    for (const el of elements) {
+      if (!(el instanceof Element)) {
+        continue;
+      }
+      const bgUrl = extractBackgroundImageUrl(el);
+      if (bgUrl) {
+        const rect = el.getBoundingClientRect();
+        return {
+          imageUrl: bgUrl,
+          width: Math.round(rect.width || 0),
+          height: Math.round(rect.height || 0),
+          sourceElement: el
+        };
+      }
     }
 
     return null;
   }
 
-  function openMetadataModal(imageEl) {
+  function buildImageContextFromImg(img) {
+    const url = img.currentSrc || img.src;
+    return {
+      imageUrl: url,
+      width: img.naturalWidth || img.width || 0,
+      height: img.naturalHeight || img.height || 0,
+      sourceElement: img
+    };
+  }
+
+  function extractBackgroundImageUrl(element) {
+    const style = window.getComputedStyle(element);
+    const bg = style.backgroundImage;
+    if (!bg || bg === 'none') {
+      return '';
+    }
+    const match = bg.match(/url\\(["']?(.*?)["']?\\)/i);
+    return match ? match[1] : '';
+  }
+
+  function openMetadataModal(imageContext) {
     closeModal();
 
-    const imageUrl = imageEl.currentSrc || imageEl.src;
-    const width = imageEl.naturalWidth || imageEl.width || 0;
-    const height = imageEl.naturalHeight || imageEl.height || 0;
+    const imageUrl = imageContext.imageUrl;
+    const width = imageContext.width || 0;
+    const height = imageContext.height || 0;
+    const promptPrefill = guessPromptText(imageContext.sourceElement || null);
+    const promptPrefillEscaped = promptPrefill ? escapeHtml(promptPrefill) : '';
 
     modalEl = document.createElement('div');
     modalEl.className = 'imh-modal';
@@ -145,7 +189,7 @@
           </div>
           <div class="imh-modal__field" style="grid-column: 1 / -1;">
             <label>Prompt</label>
-            <textarea name="prompt" placeholder="Describe the prompt..."></textarea>
+            <textarea name="prompt" placeholder="Describe the prompt...">${promptPrefillEscaped}</textarea>
           </div>
           <div class="imh-modal__field" style="grid-column: 1 / -1;">
             <label>Negative Prompt</label>
@@ -240,45 +284,53 @@
   }
 
   async function downloadWithMetadata(imageUrl, metadata, sidecarFallback) {
-    const baseName = buildBaseName(metadata);
-    const imageResult = await fetchImageBlob(imageUrl);
-    const extension = inferExtension(imageResult && imageResult.type, imageUrl);
+    try {
+      const baseName = buildBaseName(metadata);
+      const imageResult = await fetchImageBlob(imageUrl);
+      const extension = inferExtension(imageResult && imageResult.type, imageUrl);
 
-    if (!imageResult || !imageResult.blob) {
-      triggerDownload(imageUrl, `${baseName}.${extension}`, false);
+      if (!imageResult || !imageResult.blob) {
+        downloadRemoteUrl(imageUrl, `${baseName}.${extension}`);
+        if (sidecarFallback) {
+          saveSidecar(baseName, metadata);
+        }
+        showToast('Saved image (metadata unavailable: fetch blocked)');
+        return;
+      }
+
+      let blob = imageResult.blob;
+      let outputExtension = extension;
+
+      if (!isPngBlob(blob)) {
+        const converted = await convertToPngBlob(blob);
+        if (converted) {
+          blob = converted;
+          outputExtension = 'png';
+        }
+      }
+
+      if (isPngBlob(blob)) {
+        const buffer = await blob.arrayBuffer();
+        const parameters = buildParametersString(metadata);
+        const embedded = embedPngTextChunk(buffer, 'parameters', parameters);
+        const outBlob = new Blob([embedded], { type: 'image/png' });
+        triggerDownload(URL.createObjectURL(outBlob), `${baseName}.png`, true);
+        showToast('Saved PNG with embedded metadata');
+        return;
+      }
+
+      triggerDownload(URL.createObjectURL(blob), `${baseName}.${outputExtension}`, true);
       if (sidecarFallback) {
         saveSidecar(baseName, metadata);
       }
-      showToast('Saved image (metadata unavailable: fetch blocked)');
-      return;
-    }
-
-    let blob = imageResult.blob;
-    let outputExtension = extension;
-
-    if (!isPngBlob(blob)) {
-      const converted = await convertToPngBlob(blob);
-      if (converted) {
-        blob = converted;
-        outputExtension = 'png';
+      showToast('Saved image (non-PNG, metadata not embedded)');
+    } catch (error) {
+      console.warn('[IMH] Failed to save image', error);
+      if (sidecarFallback) {
+        saveSidecar(buildBaseName(metadata), metadata);
       }
+      showToast('Failed to save image');
     }
-
-    if (isPngBlob(blob)) {
-      const buffer = await blob.arrayBuffer();
-      const parameters = buildParametersString(metadata);
-      const embedded = embedPngTextChunk(buffer, 'parameters', parameters);
-      const outBlob = new Blob([embedded], { type: 'image/png' });
-      triggerDownload(URL.createObjectURL(outBlob), `${baseName}.png`, true);
-      showToast('Saved PNG with embedded metadata');
-      return;
-    }
-
-    triggerDownload(URL.createObjectURL(blob), `${baseName}.${outputExtension}`, true);
-    if (sidecarFallback) {
-      saveSidecar(baseName, metadata);
-    }
-    showToast('Saved image (non-PNG, metadata not embedded)');
   }
 
   function triggerDownload(url, filename, revoke) {
@@ -286,7 +338,11 @@
     anchor.href = url;
     anchor.download = filename;
     anchor.style.display = 'none';
-    document.body.appendChild(anchor);
+    const parent = document.body || document.documentElement;
+    if (!parent) {
+      return;
+    }
+    parent.appendChild(anchor);
     anchor.click();
     anchor.remove();
 
@@ -295,17 +351,46 @@
     }
   }
 
-  async function fetchImageBlob(imageUrl) {
-    try {
-      const response = await fetch(imageUrl, { credentials: 'include' });
-      if (!response.ok) {
-        return null;
-      }
-      const blob = await response.blob();
-      return { blob, type: blob.type };
-    } catch {
-      return null;
+  function downloadRemoteUrl(url, filename) {
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage({ type: 'download-url', url, filename }, () => {
+        if (chrome.runtime.lastError) {
+          console.warn('[IMH] download failed', chrome.runtime.lastError.message);
+          triggerDownload(url, filename, false);
+        }
+      });
+      return;
     }
+    triggerDownload(url, filename, false);
+  }
+
+  async function fetchImageBlob(imageUrl) {
+    const attempts = [
+      { credentials: 'omit' },
+      { credentials: 'include' }
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        const response = await fetch(imageUrl, {
+          credentials: attempt.credentials
+        });
+        if (!response.ok) {
+          continue;
+        }
+        const blob = await response.blob();
+        return { blob, type: blob.type };
+      } catch {
+        // Try next credential mode.
+      }
+    }
+
+    const backgroundResult = await fetchImageBlobViaBackground(imageUrl);
+    if (backgroundResult) {
+      return backgroundResult;
+    }
+
+    return null;
   }
 
   function inferExtension(mimeType, imageUrl) {
@@ -326,6 +411,190 @@
     }
 
     return 'png';
+  }
+
+  function guessPromptText(sourceElement) {
+    if (!sourceElement || !(sourceElement instanceof Element)) {
+      return '';
+    }
+
+    const provider = inferProvider();
+    if (provider === 'ChatGPT') {
+      const prompt = findChatGptPrompt(sourceElement);
+      if (prompt) {
+        return prompt;
+      }
+    }
+
+    if (provider === 'Gemini') {
+      const prompt = findGeminiPrompt(sourceElement);
+      if (prompt) {
+        return prompt;
+      }
+    }
+
+    return findGenericPrompt(sourceElement);
+  }
+
+  function findChatGptPrompt(sourceElement) {
+    const message = sourceElement.closest('[data-message-author-role]');
+    if (message) {
+      const role = message.getAttribute('data-message-author-role');
+      if (role === 'assistant') {
+        const previous = findPreviousSiblingMessage(message, 'user');
+        const text = extractReadableText(previous);
+        if (text) {
+          return text;
+        }
+      }
+      if (role === 'user') {
+        const text = extractReadableText(message);
+        if (text) {
+          return text;
+        }
+      }
+    }
+
+    const allUser = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+    const lastUser = allUser[allUser.length - 1];
+    return extractReadableText(lastUser);
+  }
+
+  function findGeminiPrompt(sourceElement) {
+    const selector = '.user-query-bubble-with-background .query-text';
+    const promptFromThread = findPreviousSelectorText(sourceElement, selector);
+    if (promptFromThread) {
+      return promptFromThread;
+    }
+
+    const promptFromAncestor = findPreviousSelectorText(
+      sourceElement.closest('article') || sourceElement,
+      selector
+    );
+    if (promptFromAncestor) {
+      return promptFromAncestor;
+    }
+
+    const all = document.querySelectorAll(selector);
+    const last = all[all.length - 1];
+    return extractReadableText(last);
+  }
+
+  function findGenericPrompt(sourceElement) {
+    return findPreviousTextBlock(sourceElement);
+  }
+
+  function findPreviousSiblingMessage(messageEl, role) {
+    let current = messageEl.previousElementSibling;
+    while (current) {
+      if (current.getAttribute && current.getAttribute('data-message-author-role') === role) {
+        return current;
+      }
+      current = current.previousElementSibling;
+    }
+    return null;
+  }
+
+  function findPreviousTextBlock(startElement) {
+    let current = startElement;
+    for (let depth = 0; depth < 6; depth += 1) {
+      let sibling = current.previousElementSibling;
+      while (sibling) {
+        const text = extractReadableText(sibling);
+        if (text) {
+          return text;
+        }
+        sibling = sibling.previousElementSibling;
+      }
+      if (!current.parentElement) {
+        break;
+      }
+      current = current.parentElement;
+    }
+    return '';
+  }
+
+  function findPreviousSelectorText(startElement, selector) {
+    let current = startElement;
+    for (let depth = 0; depth < 6; depth += 1) {
+      let sibling = current.previousElementSibling;
+      while (sibling) {
+        const match = sibling.matches(selector) ? sibling : sibling.querySelector(selector);
+        const text = extractReadableText(match || sibling);
+        if (text) {
+          return text;
+        }
+        sibling = sibling.previousElementSibling;
+      }
+      if (!current.parentElement) {
+        break;
+      }
+      current = current.parentElement;
+    }
+    return '';
+  }
+
+  function extractReadableText(element) {
+    if (!element || !(element instanceof Element)) {
+      return '';
+    }
+    const text = (element.innerText || '').trim();
+    if (!text || text.length < 8) {
+      return '';
+    }
+    const cleaned = text.replace(/\s+/g, ' ');
+    if (isLikelyUiText(cleaned)) {
+      return '';
+    }
+    return cleaned;
+  }
+
+  async function fetchImageBlobViaBackground(imageUrl) {
+    if (!chrome.runtime || !chrome.runtime.sendMessage) {
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'fetch-image', url: imageUrl }, (response) => {
+        if (chrome.runtime.lastError || !response || !response.ok || !response.buffer) {
+          resolve(null);
+          return;
+        }
+        const mimeType = response.type || inferMimeTypeFromUrl(imageUrl);
+        const blob = new Blob([response.buffer], { type: mimeType || undefined });
+        resolve({ blob, type: mimeType || blob.type });
+      });
+    });
+  }
+
+  function inferMimeTypeFromUrl(url) {
+    const lower = url.toLowerCase();
+    if (lower.includes('.png')) {
+      return 'image/png';
+    }
+    if (lower.includes('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.includes('.jpg') || lower.includes('.jpeg')) {
+      return 'image/jpeg';
+    }
+    return '';
+  }
+
+  function isLikelyUiText(text) {
+    const lower = text.toLowerCase();
+    const badFragments = [
+      'save to metahub',
+      'copy',
+      'regenerate',
+      'share',
+      'report',
+      'edit',
+      'like',
+      'dislike',
+      'download'
+    ];
+    return badFragments.some((fragment) => lower.includes(fragment));
   }
 
   function saveSidecar(baseName, metadata) {
@@ -540,5 +809,19 @@
     }, 2400);
   }
 
-  ensureButton();
+  function boot() {
+    ensureButton();
+    const observer = new MutationObserver(() => ensureButton());
+    observer.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true
+    });
+    window.addEventListener('pageshow', ensureButton);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
 })();

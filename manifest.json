@@ -3,6 +3,19 @@
   "name": "Image MetaHub Browser",
   "version": "0.1.0",
   "description": "Save online AI images with MetaHub-compatible sidecar metadata.",
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://*.openai.com/*",
+    "https://gemini.google.com/*",
+    "https://lh3.googleusercontent.com/*",
+    "https://lh3.google.com/*",
+    "https://grok.com/*",
+    "https://x.ai/*"
+  ],
+  "permissions": ["downloads"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -12,6 +25,8 @@
         "https://grok.com/*",
         "https://x.ai/*"
       ],
+      "run_at": "document_idle",
+      "all_frames": true,
       "js": ["content.js"],
       "css": ["content.css"]
     }

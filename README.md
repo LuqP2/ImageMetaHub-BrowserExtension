@@ -31,5 +31,5 @@ A minimal MV3 browser extension that saves online AI images with embedded MetaHu
 ## Next steps
 
 - Auto-capture prompt/model from each site
-- Optional: embed metadata into PNG tEXt/iTXt chunks
 - Add settings (default provider/model, default folder name)
+- Embed request URL-

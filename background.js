@@ -44,6 +44,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
+if (chrome.action && chrome.runtime && chrome.runtime.openOptionsPage) {
+  chrome.action.onClicked.addListener(() => {
+    chrome.runtime.openOptionsPage();
+  });
+}
+
 async function fetchImage(url) {
   const attempts = [
     { credentials: 'omit' },

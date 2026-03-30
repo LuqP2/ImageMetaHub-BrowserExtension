@@ -1,0 +1,145 @@
+:root {
+  --bg: #0b1020;
+  --panel: rgba(18, 23, 43, 0.92);
+  --text: #f5f7ff;
+  --muted: #9aa3c7;
+  --border: rgba(255, 255, 255, 0.12);
+  --accent: #ffbf3c;
+  --accent-strong: #ff8a3d;
+  --shadow: 0 24px 60px rgba(11, 16, 32, 0.42);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(255, 191, 60, 0.14), transparent 28%),
+    linear-gradient(180deg, #0b1020, #0d1325 55%, #0a0f1d);
+  color: var(--text);
+  font-family: "Segoe UI", Tahoma, sans-serif;
+}
+
+.options-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+}
+
+.options-card {
+  width: min(720px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+
+.options-eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 32px;
+}
+
+.options-copy {
+  margin: 0 0 24px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.options-form {
+  display: grid;
+  gap: 16px;
+}
+
+.options-field,
+.options-check {
+  display: grid;
+  gap: 8px;
+}
+
+.options-field span,
+.options-check span {
+  font-size: 14px;
+}
+
+.options-field input[type="text"] {
+  width: 100%;
+  background: rgba(11, 16, 32, 0.82);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: 14px;
+}
+
+.options-check {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+}
+
+.options-check input {
+  margin-top: 4px;
+}
+
+.options-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.primary-button,
+.ghost-button {
+  border-radius: 999px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-button {
+  border: none;
+  color: #241600;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+}
+
+.ghost-button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+}
+
+.options-status {
+  min-height: 20px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .options-card {
+    padding: 22px;
+  }
+
+  .options-actions {
+    justify-content: stretch;
+    flex-direction: column;
+  }
+
+  .primary-button,
+  .ghost-button {
+    width: 100%;
+  }
+}

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Image MetaHub Browser Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="options-shell">
+      <section class="options-card">
+        <p class="options-eyebrow">Image MetaHub Browser</p>
+        <h1>Settings</h1>
+        <p class="options-copy">
+          Quick Save uses these defaults when saving images from ChatGPT and Grok.
+        </p>
+
+        <form id="settings-form" class="options-form">
+          <label class="options-field">
+            <span>Default provider override</span>
+            <input type="text" name="defaultProvider" placeholder="Leave blank to infer from site" />
+          </label>
+
+          <label class="options-field">
+            <span>Default model fallback</span>
+            <input type="text" name="defaultModel" placeholder="Used when autodetect fails" />
+          </label>
+
+          <label class="options-field">
+            <span>Filename prefix</span>
+            <input type="text" name="filenamePrefix" placeholder="imh" />
+          </label>
+
+          <label class="options-check">
+            <input type="checkbox" name="sidecarFallback" />
+            <span>Save JSON sidecar when metadata embedding fails</span>
+          </label>
+
+          <label class="options-check">
+            <input type="checkbox" name="includeRichMetadata" />
+            <span>Embed rich `imagemetahub_data` metadata in PNGs</span>
+          </label>
+
+          <div class="options-actions">
+            <button type="button" id="reset-button" class="ghost-button">Reset</button>
+            <button type="submit" class="primary-button">Save settings</button>
+          </div>
+        </form>
+
+        <p id="status" class="options-status" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>

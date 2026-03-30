@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Image MetaHub Browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Save online AI images with MetaHub-compatible sidecar metadata.",
   "host_permissions": [
     "https://chatgpt.com/*",
@@ -12,7 +12,14 @@
     "https://grok.com/*",
     "https://x.ai/*"
   ],
-  "permissions": ["downloads"],
+  "permissions": ["downloads", "storage"],
+  "action": {
+    "default_title": "Image MetaHub Browser"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "background": {
     "service_worker": "background.js"
   },

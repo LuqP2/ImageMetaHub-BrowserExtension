@@ -1,120 +1,261 @@
 (() => {
-  const BUTTON_ID = 'imh-save-button';
-  const OVERLAY_ID = 'imh-overlay';
+  const INLINE_ACTION_ATTR = 'data-imh-save-action';
+  const MESSAGE_HOST_ATTR = 'data-imh-save-host';
+  const DEFAULT_SETTINGS = {
+    defaultProvider: '',
+    defaultModel: '',
+    filenamePrefix: 'imh',
+    sidecarFallback: true,
+    includeRichMetadata: true
+  };
 
-  let pickMode = false;
-  let overlayEl = null;
   let modalEl = null;
+  let refreshQueued = false;
+  let settingsCache = { ...DEFAULT_SETTINGS };
+  let settingsPromise = null;
 
-  function ensureButton() {
-    if (document.getElementById(BUTTON_ID)) {
+  function queueInlineActionRefresh() {
+    if (refreshQueued) {
       return;
     }
 
-    const button = document.createElement('button');
-    button.id = BUTTON_ID;
-    button.type = 'button';
-    button.textContent = 'Save to MetaHub';
-    button.addEventListener('click', startPickMode);
-    (document.documentElement || document.body || document).appendChild(button);
+    refreshQueued = true;
+    window.requestAnimationFrame(() => {
+      refreshQueued = false;
+      refreshInlineActions();
+    });
   }
 
-  function startPickMode() {
-    if (pickMode) {
-      return;
-    }
-    pickMode = true;
-    showOverlay('Click an image to save');
-    document.addEventListener('click', handlePickClick, true);
+  function refreshInlineActions() {
+    const messageContainers = collectAssistantMessagesWithImages();
+    messageContainers.forEach((messageEl) => ensureInlineAction(messageEl));
   }
 
-  function stopPickMode() {
-    pickMode = false;
-    hideOverlay();
-    document.removeEventListener('click', handlePickClick, true);
+  function collectAssistantMessagesWithImages() {
+    const containers = new Set();
+    const candidates = document.querySelectorAll('img');
+
+    candidates.forEach((img) => {
+      if (!(img instanceof HTMLImageElement) || !isLikelyImageCandidate(img)) {
+        return;
+      }
+
+      const messageEl = findAssistantMessageContainer(img);
+      if (messageEl) {
+        containers.add(messageEl);
+      }
+    });
+
+    return Array.from(containers);
   }
 
-  function showOverlay(message) {
-    if (!overlayEl) {
-      overlayEl = document.createElement('div');
-      overlayEl.id = OVERLAY_ID;
-      document.documentElement.appendChild(overlayEl);
-    }
-    overlayEl.textContent = message;
-  }
-
-  function hideOverlay() {
-    if (overlayEl) {
-      overlayEl.remove();
-      overlayEl = null;
-    }
-  }
-
-  function handlePickClick(event) {
-    if (!pickMode) {
+  function ensureInlineAction(messageEl) {
+    if (!(messageEl instanceof HTMLElement)) {
       return;
     }
 
-    const target = event.target;
-    if (!(target instanceof Element)) {
+    const existing = messageEl.querySelector(`[${INLINE_ACTION_ATTR}="true"]`);
+    if (existing) {
       return;
     }
 
-    if (target.closest('#' + BUTTON_ID) || target.closest('.imh-modal')) {
-      return;
-    }
-
-    const imageContext = findImageContext(event);
+    const imageContext = findBestImageContextInMessage(messageEl);
     if (!imageContext) {
-      showOverlay('Not an image. Click an image to save.');
       return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
+    messageEl.setAttribute(MESSAGE_HOST_ATTR, 'true');
 
-    stopPickMode();
-    openMetadataModal(imageContext);
+    const row = document.createElement('div');
+    row.className = 'imh-inline-action-row';
+    row.setAttribute(INLINE_ACTION_ATTR, 'true');
+
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button';
+    saveButton.className = 'imh-inline-action imh-inline-action--primary';
+    saveButton.textContent = 'Save';
+    saveButton.title = 'Quick save image to MetaHub';
+    saveButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const latestImageContext = findBestImageContextInMessage(messageEl) || imageContext;
+      if (!latestImageContext) {
+        showToast('No image found in this message');
+        return;
+      }
+
+      await quickSaveImage(latestImageContext);
+    });
+
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'imh-inline-action imh-inline-action--secondary';
+    editButton.textContent = 'Edit';
+    editButton.title = 'Review metadata before saving';
+    editButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const latestImageContext = findBestImageContextInMessage(messageEl) || imageContext;
+      if (!latestImageContext) {
+        showToast('No image found in this message');
+        return;
+      }
+
+      await openMetadataModal(latestImageContext);
+    });
+
+    row.appendChild(saveButton);
+    row.appendChild(editButton);
+    messageEl.appendChild(row);
   }
 
-  function findImageContext(event) {
-    const target = event.target;
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-
-    for (const entry of path) {
-      if (entry instanceof HTMLImageElement) {
-        return buildImageContextFromImg(entry);
-      }
+  function findAssistantMessageContainer(element) {
+    if (!element || !(element instanceof Element)) {
+      return null;
     }
 
-    if (target instanceof HTMLImageElement) {
-      return buildImageContextFromImg(target);
+    const provider = inferProvider();
+
+    if (provider === 'ChatGPT') {
+      return element.closest('[data-message-author-role="assistant"]');
     }
 
-    const elements = document.elementsFromPoint(event.clientX, event.clientY);
-    for (const el of elements) {
-      if (el instanceof HTMLImageElement) {
-        return buildImageContextFromImg(el);
-      }
+    if (provider === 'Gemini') {
+      return (
+        element.closest('model-response') ||
+        element.closest('[data-test-id="conversation-turn-model"]') ||
+        element.closest('[data-response-id]') ||
+        element.closest('article')
+      );
     }
 
-    for (const el of elements) {
-      if (!(el instanceof Element)) {
-        continue;
+    if (provider === 'Grok') {
+      return (
+        element.closest('[data-testid="conversation-turn-assistant"]') ||
+        element.closest('[data-testid*="assistant"]') ||
+        element.closest('article') ||
+        element.closest('[role="article"]')
+      );
+    }
+
+    return element.closest('article, [role="article"], section');
+  }
+
+  function findBestImageContextInMessage(root) {
+    const imageCandidates = [];
+
+    root.querySelectorAll('img').forEach((img) => {
+      if (!(img instanceof HTMLImageElement) || !isLikelyImageCandidate(img)) {
+        return;
       }
-      const bgUrl = extractBackgroundImageUrl(el);
-      if (bgUrl) {
-        const rect = el.getBoundingClientRect();
-        return {
-          imageUrl: bgUrl,
-          width: Math.round(rect.width || 0),
-          height: Math.round(rect.height || 0),
+
+      const context = buildImageContextFromImg(img);
+      if (!context || !context.imageUrl) {
+        return;
+      }
+
+      imageCandidates.push({
+        context,
+        score: scoreImageCandidate(context.width, context.height)
+      });
+    });
+
+    root.querySelectorAll('*').forEach((el) => {
+      if (!(el instanceof HTMLElement)) {
+        return;
+      }
+
+      const backgroundUrl = extractBackgroundImageUrl(el);
+      if (!backgroundUrl) {
+        return;
+      }
+
+      const rect = el.getBoundingClientRect();
+      const width = Math.round(rect.width || 0);
+      const height = Math.round(rect.height || 0);
+      if (!isLargeEnough(width, height)) {
+        return;
+      }
+
+      imageCandidates.push({
+        context: {
+          imageUrl: backgroundUrl,
+          width,
+          height,
           sourceElement: el
-        };
-      }
+        },
+        score: scoreImageCandidate(width, height)
+      });
+    });
+
+    imageCandidates.sort((a, b) => b.score - a.score);
+    return imageCandidates[0] ? imageCandidates[0].context : null;
+  }
+
+  function isLikelyImageCandidate(img) {
+    const url = img.currentSrc || img.src || '';
+    if (!url || url.startsWith('data:')) {
+      return false;
     }
 
-    return null;
+    const width = img.naturalWidth || img.width || Math.round(img.getBoundingClientRect().width || 0);
+    const height =
+      img.naturalHeight || img.height || Math.round(img.getBoundingClientRect().height || 0);
+
+    if (!isLargeEnough(width, height)) {
+      return false;
+    }
+
+    const alt = (img.getAttribute('alt') || '').toLowerCase();
+    if (alt && /(avatar|icon|logo|profile)/.test(alt)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function isLargeEnough(width, height) {
+    return width >= 160 && height >= 160;
+  }
+
+  function scoreImageCandidate(width, height) {
+    return Math.max(width, 0) * Math.max(height, 0);
+  }
+
+  function getStorageArea() {
+    if (!chrome.storage) {
+      return null;
+    }
+    return chrome.storage.sync || chrome.storage.local || null;
+  }
+
+  function loadSettings() {
+    if (settingsPromise) {
+      return settingsPromise;
+    }
+
+    const storage = getStorageArea();
+    if (!storage) {
+      settingsPromise = Promise.resolve(settingsCache);
+      return settingsPromise;
+    }
+
+    settingsPromise = new Promise((resolve) => {
+      storage.get(DEFAULT_SETTINGS, (items) => {
+        settingsCache = { ...DEFAULT_SETTINGS, ...(items || {}) };
+        resolve(settingsCache);
+      });
+    });
+
+    return settingsPromise;
+  }
+
+  function updateSettingsCache(changes) {
+    Object.keys(changes).forEach((key) => {
+      settingsCache[key] = changes[key].newValue;
+    });
   }
 
   function buildImageContextFromImg(img) {
@@ -137,19 +278,110 @@
     return match ? match[1] : '';
   }
 
-  function openMetadataModal(imageContext) {
+  async function quickSaveImage(imageContext) {
+    const metadata = await buildMetadataFromContext(imageContext);
+    downloadWithMetadata(imageContext.imageUrl, metadata, Boolean(metadata.sidecar_fallback));
+  }
+
+  async function buildMetadataFromContext(imageContext, overrides = {}) {
+    const settings = await loadSettings();
+    const sourceElement = imageContext.sourceElement || null;
+    const provider = overrides.provider || settings.defaultProvider || inferProvider();
+    const prompt =
+      overrides.prompt !== undefined ? overrides.prompt : guessPromptText(sourceElement, provider);
+    const model =
+      overrides.model !== undefined
+        ? overrides.model
+        : guessModelName(sourceElement, provider) || settings.defaultModel || '';
+    const width = overrides.width !== undefined ? overrides.width : imageContext.width || undefined;
+    const height =
+      overrides.height !== undefined ? overrides.height : imageContext.height || undefined;
+    const assistantMessage = sourceElement ? findAssistantMessageContainer(sourceElement) : null;
+
+    return {
+      prompt,
+      model,
+      width,
+      height,
+      provider,
+      source_url: window.location.href,
+      page_title: document.title || '',
+      page_host: window.location.hostname,
+      image_url: imageContext.imageUrl,
+      captured_at: new Date().toISOString(),
+      source_message_text: extractReadableText(assistantMessage),
+      conversation_id: inferConversationId(),
+      filename_prefix: settings.filenamePrefix || DEFAULT_SETTINGS.filenamePrefix,
+      sidecar_fallback: Boolean(settings.sidecarFallback),
+      include_rich_metadata: Boolean(settings.includeRichMetadata),
+      _rich_context: {
+        schema: 'imagemetahub.browser/1.0',
+        app: {
+          name: 'Image MetaHub Browser',
+          version: getExtensionVersion()
+        },
+        source: {
+          provider,
+          url: window.location.href,
+          hostname: window.location.hostname,
+          title: document.title || '',
+          conversation_id: inferConversationId()
+        },
+        image: {
+          url: imageContext.imageUrl,
+          width,
+          height
+        },
+        prompt: {
+          text: prompt,
+          strategy: inferPromptStrategy(provider)
+        },
+        assistant: {
+          excerpt: extractReadableText(assistantMessage)
+        }
+      }
+    };
+  }
+
+  function getExtensionVersion() {
+    try {
+      return chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest().version : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function inferConversationId() {
+    const match = window.location.pathname.match(/\/(?:c|chat|conversation)\/([^/?#]+)/i);
+    return match ? match[1] : '';
+  }
+
+  function inferPromptStrategy(provider) {
+    if (provider === 'ChatGPT') {
+      return 'chatgpt.previous_user_message';
+    }
+    if (provider === 'Grok') {
+      return 'grok.previous_user_message';
+    }
+    return 'generic.previous_text_block';
+  }
+
+  async function openMetadataModal(imageContext) {
     closeModal();
 
+    const metadataDraft = await buildMetadataFromContext(imageContext);
+
     const imageUrl = imageContext.imageUrl;
-    const width = imageContext.width || 0;
-    const height = imageContext.height || 0;
-    const promptPrefill = guessPromptText(imageContext.sourceElement || null);
+    const width = metadataDraft.width || 0;
+    const height = metadataDraft.height || 0;
+    const promptPrefill = metadataDraft.prompt || '';
     const promptPrefillEscaped = promptPrefill ? escapeHtml(promptPrefill) : '';
+    const modelPrefillEscaped = metadataDraft.model ? escapeHtml(metadataDraft.model) : '';
 
     modalEl = document.createElement('div');
     modalEl.className = 'imh-modal';
 
-    const provider = inferProvider();
+    const provider = metadataDraft.provider || inferProvider();
 
     modalEl.innerHTML = `
       <div class="imh-modal__panel">
@@ -161,23 +393,7 @@
           </div>
           <div class="imh-modal__field">
             <label>Model</label>
-            <input type="text" name="model" placeholder="e.g. DALL-E 3" />
-          </div>
-          <div class="imh-modal__field">
-            <label>Steps</label>
-            <input type="number" name="steps" min="1" placeholder="30" />
-          </div>
-          <div class="imh-modal__field">
-            <label>CFG Scale</label>
-            <input type="number" name="cfg" step="0.1" placeholder="7.5" />
-          </div>
-          <div class="imh-modal__field">
-            <label>Seed</label>
-            <input type="number" name="seed" placeholder="123456" />
-          </div>
-          <div class="imh-modal__field">
-            <label>Sampler</label>
-            <input type="text" name="sampler" placeholder="Euler a" />
+            <input type="text" name="model" placeholder="e.g. GPT-4o Images" value="${modelPrefillEscaped}" />
           </div>
           <div class="imh-modal__field">
             <label>Width</label>
@@ -191,14 +407,10 @@
             <label>Prompt</label>
             <textarea name="prompt" placeholder="Describe the prompt...">${promptPrefillEscaped}</textarea>
           </div>
-          <div class="imh-modal__field" style="grid-column: 1 / -1;">
-            <label>Negative Prompt</label>
-            <textarea name="negativePrompt" placeholder="Optional"></textarea>
-          </div>
         </div>
         <div class="imh-modal__field" style="grid-column: 1 / -1;">
           <label>
-            <input type="checkbox" name="sidecarFallback" checked />
+            <input type="checkbox" name="sidecarFallback" ${metadataDraft.sidecar_fallback ? 'checked' : ''} />
             Save .json sidecar if embed fails
           </label>
         </div>
@@ -220,7 +432,7 @@
       }
 
       if (target.dataset.action === 'save') {
-        handleSave(imageUrl, modalEl);
+        handleSave(imageContext, modalEl, metadataDraft);
       }
     });
 
@@ -234,29 +446,41 @@
     }
   }
 
-  function handleSave(imageUrl, modalRoot) {
+  function handleSave(imageContext, modalRoot, baseMetadata) {
     const form = modalRoot;
     const promptValue = getFieldValue(form, 'prompt');
-    const negativePromptValue = getFieldValue(form, 'negativePrompt');
+    const modelValue = getFieldValue(form, 'model');
+    const providerValue = getFieldValue(form, 'provider');
+    const widthValue = parseNumber(getFieldValue(form, 'width'));
+    const heightValue = parseNumber(getFieldValue(form, 'height'));
+    const sidecarFallback = isChecked(form, 'sidecarFallback');
     const metadata = {
+      ...baseMetadata,
       prompt: promptValue,
-      negative_prompt: negativePromptValue,
-      steps: parseNumber(getFieldValue(form, 'steps')),
-      cfg_scale: parseNumber(getFieldValue(form, 'cfg')),
-      sampler: getFieldValue(form, 'sampler'),
-      seed: parseNumber(getFieldValue(form, 'seed')),
-      model: getFieldValue(form, 'model'),
-      width: parseNumber(getFieldValue(form, 'width')),
-      height: parseNumber(getFieldValue(form, 'height')),
-      provider: getFieldValue(form, 'provider'),
-      source_url: window.location.href,
-      image_url: imageUrl,
+      model: modelValue,
+      width: widthValue,
+      height: heightValue,
+      provider: providerValue,
+      image_url: imageContext.imageUrl,
       captured_at: new Date().toISOString()
     };
 
-    const sidecarFallback = isChecked(form, 'sidecarFallback');
+    metadata.sidecar_fallback = sidecarFallback;
+    if (metadata._rich_context) {
+      metadata._rich_context.source.provider = providerValue;
+      metadata._rich_context.source.url = metadata.source_url || window.location.href;
+      metadata._rich_context.source.hostname = metadata.page_host || window.location.hostname;
+      metadata._rich_context.source.title = metadata.page_title || document.title || '';
+      metadata._rich_context.image.url = imageContext.imageUrl;
+      metadata._rich_context.image.width = widthValue;
+      metadata._rich_context.image.height = heightValue;
+      metadata._rich_context.prompt.text = promptValue;
+      metadata._rich_context.prompt.strategy = inferPromptStrategy(providerValue);
+      metadata._rich_context.assistant.excerpt = metadata.source_message_text || '';
+    }
+
     closeModal();
-    downloadWithMetadata(imageUrl, metadata, sidecarFallback);
+    downloadWithMetadata(imageContext.imageUrl, metadata, sidecarFallback);
   }
 
   function getFieldValue(root, name) {
@@ -312,7 +536,15 @@
       if (isPngBlob(blob)) {
         const buffer = await blob.arrayBuffer();
         const parameters = buildParametersString(metadata);
-        const embedded = embedPngTextChunk(buffer, 'parameters', parameters);
+        const metadataChunks = [{ type: 'tEXt', keyword: 'parameters', text: parameters }];
+        if (metadata.include_rich_metadata !== false) {
+          metadataChunks.push({
+            type: 'iTXt',
+            keyword: 'imagemetahub_data',
+            text: JSON.stringify(buildRichMetadataEnvelope(metadata), null, 2)
+          });
+        }
+        const embedded = embedPngMetadataChunks(buffer, metadataChunks);
         const outBlob = new Blob([embedded], { type: 'image/png' });
         triggerDownload(URL.createObjectURL(outBlob), `${baseName}.png`, true);
         showToast('Saved PNG with embedded metadata');
@@ -413,14 +645,21 @@
     return 'png';
   }
 
-  function guessPromptText(sourceElement) {
+  function guessPromptText(sourceElement, providerOverride) {
     if (!sourceElement || !(sourceElement instanceof Element)) {
       return '';
     }
 
-    const provider = inferProvider();
+    const provider = providerOverride || inferProvider();
     if (provider === 'ChatGPT') {
       const prompt = findChatGptPrompt(sourceElement);
+      if (prompt) {
+        return prompt;
+      }
+    }
+
+    if (provider === 'Grok') {
+      const prompt = findGrokPrompt(sourceElement);
       if (prompt) {
         return prompt;
       }
@@ -480,6 +719,29 @@
     return extractReadableText(last);
   }
 
+  function findGrokPrompt(sourceElement) {
+    const message =
+      sourceElement.closest('[data-testid*="assistant"]') ||
+      sourceElement.closest('article') ||
+      sourceElement.closest('[role="article"]');
+
+    if (message) {
+      let current = message.previousElementSibling;
+      while (current) {
+        const explicitUser = current.matches('[data-testid*="user"]')
+          ? current
+          : current.querySelector('[data-testid*="user"]');
+        const explicitUserText = extractReadableText(explicitUser || current);
+        if (explicitUserText) {
+          return explicitUserText;
+        }
+        current = current.previousElementSibling;
+      }
+    }
+
+    return findGenericPrompt(sourceElement);
+  }
+
   function findGenericPrompt(sourceElement) {
     return findPreviousTextBlock(sourceElement);
   }
@@ -534,11 +796,103 @@
     return '';
   }
 
+  function guessModelName(sourceElement, providerOverride) {
+    const provider = providerOverride || inferProvider();
+
+    if (provider === 'ChatGPT') {
+      return findKnownModelName(
+        [
+          'button[data-testid*="model"]',
+          '[data-testid*="model-switcher"]',
+          'header button',
+          'nav button'
+        ],
+        sourceElement,
+        document.title,
+        [
+          'GPT-4o',
+          'GPT-4.1',
+          'GPT-4.5',
+          'GPT-Image-1',
+          'o4-mini',
+          'o3',
+          'o1'
+        ]
+      );
+    }
+
+    if (provider === 'Grok') {
+      return findKnownModelName(
+        [
+          '[data-testid*="model"]',
+          'header button',
+          'nav button',
+          'button[aria-haspopup="menu"]'
+        ],
+        sourceElement,
+        document.title,
+        ['Grok 3 Think', 'Grok 3', 'Grok 2']
+      );
+    }
+
+    return '';
+  }
+
+  function findKnownModelName(selectors, sourceElement, fallbackText, knownModels) {
+    const texts = [];
+
+    selectors.forEach((selector) => {
+      document.querySelectorAll(selector).forEach((el) => {
+        const text = normalizeTextForMatch(
+          el.innerText || el.textContent || el.getAttribute('aria-label') || ''
+        );
+        if (text) {
+          texts.push(text);
+        }
+      });
+    });
+
+    const bodyExcerpt = normalizeTextForMatch(document.body ? document.body.innerText : '');
+    if (fallbackText) {
+      texts.push(normalizeTextForMatch(fallbackText));
+    }
+    if (sourceElementHasUsefulText(sourceElement)) {
+      texts.push(normalizeTextForMatch(sourceElement.innerText || ''));
+    }
+    if (bodyExcerpt) {
+      texts.push(bodyExcerpt.slice(0, 2000));
+    }
+
+    for (const model of knownModels) {
+      const normalizedModel = normalizeTextForMatch(model);
+      if (texts.some((text) => text.includes(normalizedModel))) {
+        return model;
+      }
+    }
+
+    return '';
+  }
+
+  function sourceElementHasUsefulText(sourceElement) {
+    return Boolean(sourceElement && sourceElement instanceof Element && sourceElement.innerText);
+  }
+
+  function normalizeTextForMatch(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function extractReadableText(element) {
     if (!element || !(element instanceof Element)) {
       return '';
     }
-    const text = (element.innerText || '').trim();
+    const clone = element.cloneNode(true);
+    if (clone instanceof Element) {
+      clone.querySelectorAll('.imh-inline-action-row').forEach((el) => el.remove());
+    }
+    const text = ((clone instanceof HTMLElement ? clone.innerText : element.innerText) || '').trim();
     if (!text || text.length < 8) {
       return '';
     }
@@ -599,7 +953,7 @@
 
   function saveSidecar(baseName, metadata) {
     const jsonFilename = `${baseName}.json`;
-    const jsonPayload = JSON.stringify(metadata, null, 2);
+    const jsonPayload = JSON.stringify(buildRichMetadataEnvelope(metadata), null, 2);
     const jsonBlob = new Blob([jsonPayload], { type: 'application/json' });
     triggerDownload(URL.createObjectURL(jsonBlob), jsonFilename, true);
   }
@@ -664,11 +1018,61 @@
     return lines.filter(Boolean).join('\n');
   }
 
-  function embedPngTextChunk(buffer, keyword, text) {
+  function buildRichMetadataEnvelope(metadata) {
+    const richContext = metadata._rich_context || {};
+
+    return {
+      schema: richContext.schema || 'imagemetahub.browser/1.0',
+      metadata: {
+        prompt: metadata.prompt || '',
+        model: metadata.model || '',
+        provider: metadata.provider || '',
+        width: metadata.width || null,
+        height: metadata.height || null,
+        captured_at: metadata.captured_at || '',
+        source_url: metadata.source_url || '',
+        image_url: metadata.image_url || ''
+      },
+      source: richContext.source || {
+        provider: metadata.provider || '',
+        url: metadata.source_url || '',
+        hostname: metadata.page_host || '',
+        title: metadata.page_title || '',
+        conversation_id: metadata.conversation_id || ''
+      },
+      image: richContext.image || {
+        url: metadata.image_url || '',
+        width: metadata.width || null,
+        height: metadata.height || null
+      },
+      prompt: richContext.prompt || {
+        text: metadata.prompt || '',
+        strategy: inferPromptStrategy(metadata.provider || '')
+      },
+      assistant: richContext.assistant || {
+        excerpt: metadata.source_message_text || ''
+      },
+      app: richContext.app || {
+        name: 'Image MetaHub Browser',
+        version: getExtensionVersion()
+      }
+    };
+  }
+
+  function embedPngMetadataChunks(buffer, chunks) {
     const bytes = new Uint8Array(buffer);
-    const data = new TextEncoder().encode(`${keyword}\0${text}`);
-    const type = toBytes('tEXt');
-    const chunk = buildPngChunk(type, data);
+    const builtChunks = chunks
+      .filter((chunk) => chunk && chunk.keyword && chunk.text)
+      .map((chunk) => {
+        if (chunk.type === 'iTXt') {
+          return buildPngITextChunk(chunk.keyword, chunk.text);
+        }
+        return buildPngTextChunk(chunk.keyword, chunk.text);
+      });
+
+    if (!builtChunks.length) {
+      return bytes;
+    }
 
     let offset = 8;
     while (offset + 8 <= bytes.length) {
@@ -676,11 +1080,31 @@
       const chunkType = readChunkType(bytes, offset);
       const totalLength = 12 + length;
       if (chunkType === 'IEND') {
-        return concatUint8(bytes.slice(0, offset), chunk, bytes.slice(offset));
+        return concatUint8(bytes.slice(0, offset), ...builtChunks, bytes.slice(offset));
       }
       offset += totalLength;
     }
     return bytes;
+  }
+
+  function buildPngTextChunk(keyword, text) {
+    const data = new TextEncoder().encode(`${keyword}\0${text}`);
+    return buildPngChunk(toBytes('tEXt'), data);
+  }
+
+  function buildPngITextChunk(keyword, text) {
+    const encoder = new TextEncoder();
+    const keywordBytes = encoder.encode(keyword);
+    const textBytes = encoder.encode(text);
+    const data = new Uint8Array(keywordBytes.length + 5 + textBytes.length);
+    data.set(keywordBytes, 0);
+    data[keywordBytes.length] = 0;
+    data[keywordBytes.length + 1] = 0;
+    data[keywordBytes.length + 2] = 0;
+    data[keywordBytes.length + 3] = 0;
+    data[keywordBytes.length + 4] = 0;
+    data.set(textBytes, keywordBytes.length + 5);
+    return buildPngChunk(toBytes('iTXt'), data);
   }
 
   function buildPngChunk(typeBytes, dataBytes) {
@@ -762,10 +1186,12 @@
   })();
 
   function buildBaseName(metadata) {
+    const prefix = metadata.filename_prefix || DEFAULT_SETTINGS.filenamePrefix;
     const provider = metadata.provider || 'online';
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safePrefix = slugify(prefix);
     const safeProvider = slugify(provider);
-    return `imh-${safeProvider}-${timestamp}`;
+    return `${safePrefix}-${safeProvider}-${timestamp}`;
   }
 
   function slugify(value) {
@@ -810,13 +1236,22 @@
   }
 
   function boot() {
-    ensureButton();
-    const observer = new MutationObserver(() => ensureButton());
+    loadSettings();
+    queueInlineActionRefresh();
+    const observer = new MutationObserver(() => queueInlineActionRefresh());
     observer.observe(document.documentElement || document.body, {
       childList: true,
       subtree: true
     });
-    window.addEventListener('pageshow', ensureButton);
+    document.addEventListener('load', queueInlineActionRefresh, true);
+    window.addEventListener('pageshow', queueInlineActionRefresh);
+    if (chrome.storage && chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName === 'sync' || areaName === 'local') {
+          updateSettingsCache(changes);
+        }
+      });
+    }
   }
 
   if (document.readyState === 'loading') {

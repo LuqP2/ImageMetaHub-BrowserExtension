@@ -1,6 +1,8 @@
 (() => {
   const INLINE_ACTION_ATTR = 'data-imh-save-action';
   const MESSAGE_HOST_ATTR = 'data-imh-save-host';
+  const PRIMARY_ACTION_LABEL = 'Save to MetaHub';
+  const BROWSER_METADATA_CHUNK_KEY = 'imh_browser_data';
   const DEFAULT_SETTINGS = {
     defaultProvider: '',
     defaultModel: '',
@@ -33,20 +35,83 @@
 
   function collectAssistantMessagesWithImages() {
     const containers = new Set();
-    const candidates = document.querySelectorAll('img');
+    const provider = inferProvider();
+    const providerMessageCandidates = collectProviderMessageCandidates(provider);
 
-    candidates.forEach((img) => {
-      if (!(img instanceof HTMLImageElement) || !isLikelyImageCandidate(img)) {
+    providerMessageCandidates.forEach((messageEl) => {
+      if (!(messageEl instanceof HTMLElement)) {
         return;
       }
 
-      const messageEl = findAssistantMessageContainer(img);
-      if (messageEl) {
+      if (findBestImageContextInMessage(messageEl)) {
         containers.add(messageEl);
       }
     });
 
+    if (!containers.size) {
+      const candidates = document.querySelectorAll('img');
+
+      candidates.forEach((img) => {
+        if (!(img instanceof HTMLImageElement) || !isLikelyImageCandidate(img)) {
+          return;
+        }
+
+        const messageEl = findAssistantMessageContainer(img);
+        if (messageEl) {
+          containers.add(messageEl);
+        }
+      });
+    }
+
     return Array.from(containers);
+  }
+
+  function collectProviderMessageCandidates(provider) {
+    const selectors = getAssistantMessageSelectors(provider);
+
+    for (const selector of selectors) {
+      const matches = Array.from(document.querySelectorAll(selector)).filter(
+        (element) => element instanceof HTMLElement
+      );
+      if (matches.length) {
+        return matches;
+      }
+    }
+
+    return [];
+  }
+
+  function getAssistantMessageSelectors(provider) {
+    if (provider === 'ChatGPT') {
+      return [
+        '[data-message-author-role="assistant"]',
+        '[data-testid*="conversation-turn-assistant"]',
+        '[data-testid^="conversation-turn-"]',
+        'article',
+        '[role="article"]',
+        'main section'
+      ];
+    }
+
+    if (provider === 'Gemini') {
+      return [
+        'model-response',
+        '[data-test-id="conversation-turn-model"]',
+        '[data-response-id]',
+        'article'
+      ];
+    }
+
+    if (provider === 'Grok') {
+      return [
+        '[data-testid="conversation-turn-assistant"]',
+        '[data-testid*="assistant"]',
+        'article',
+        '[role="article"]'
+      ];
+    }
+
+    return ['article', '[role="article"]', 'section'];
   }
 
   function ensureInlineAction(messageEl) {
@@ -73,7 +138,7 @@
     const saveButton = document.createElement('button');
     saveButton.type = 'button';
     saveButton.className = 'imh-inline-action imh-inline-action--primary';
-    saveButton.textContent = 'Save';
+    saveButton.textContent = PRIMARY_ACTION_LABEL;
     saveButton.title = 'Quick save image to MetaHub';
     saveButton.addEventListener('click', async (event) => {
       event.preventDefault();
@@ -119,28 +184,29 @@
     const provider = inferProvider();
 
     if (provider === 'ChatGPT') {
-      return element.closest('[data-message-author-role="assistant"]');
+      return findClosestBySelectorPriority(element, getAssistantMessageSelectors(provider));
     }
 
     if (provider === 'Gemini') {
-      return (
-        element.closest('model-response') ||
-        element.closest('[data-test-id="conversation-turn-model"]') ||
-        element.closest('[data-response-id]') ||
-        element.closest('article')
-      );
+      return findClosestBySelectorPriority(element, getAssistantMessageSelectors(provider));
     }
 
     if (provider === 'Grok') {
-      return (
-        element.closest('[data-testid="conversation-turn-assistant"]') ||
-        element.closest('[data-testid*="assistant"]') ||
-        element.closest('article') ||
-        element.closest('[role="article"]')
-      );
+      return findClosestBySelectorPriority(element, getAssistantMessageSelectors(provider));
     }
 
-    return element.closest('article, [role="article"], section');
+    return findClosestBySelectorPriority(element, getAssistantMessageSelectors(provider));
+  }
+
+  function findClosestBySelectorPriority(element, selectors) {
+    for (const selector of selectors) {
+      const match = element.closest(selector);
+      if (match) {
+        return match;
+      }
+    }
+
+    return null;
   }
 
   function findBestImageContextInMessage(root) {
@@ -540,7 +606,7 @@
         if (metadata.include_rich_metadata !== false) {
           metadataChunks.push({
             type: 'iTXt',
-            keyword: 'imagemetahub_data',
+            keyword: BROWSER_METADATA_CHUNK_KEY,
             text: JSON.stringify(buildRichMetadataEnvelope(metadata), null, 2)
           });
         }
@@ -676,27 +742,42 @@
   }
 
   function findChatGptPrompt(sourceElement) {
-    const message = sourceElement.closest('[data-message-author-role]');
+    const explicitUserSelectors = [
+      '[data-message-author-role="user"]',
+      '[data-testid*="conversation-turn-user"]',
+      '[data-testid*="user-message"]',
+      '[data-testid*="user"]'
+    ];
+    const message =
+      findClosestBySelectorPriority(sourceElement, getAssistantMessageSelectors('ChatGPT')) ||
+      sourceElement.closest('[data-message-author-role]');
+
     if (message) {
-      const role = message.getAttribute('data-message-author-role');
-      if (role === 'assistant') {
-        const previous = findPreviousSiblingMessage(message, 'user');
-        const text = extractReadableText(previous);
-        if (text) {
-          return text;
-        }
+      const promptFromExplicitUser = findPreviousSiblingTextBySelectors(message, explicitUserSelectors);
+      if (promptFromExplicitUser) {
+        return promptFromExplicitUser;
       }
+
+      const role = message.getAttribute('data-message-author-role');
       if (role === 'user') {
         const text = extractReadableText(message);
         if (text) {
           return text;
         }
       }
+
+      const promptFromNearbyBlock = findPreviousTextBlock(message);
+      if (promptFromNearbyBlock) {
+        return promptFromNearbyBlock;
+      }
     }
 
-    const allUser = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
-    const lastUser = allUser[allUser.length - 1];
-    return extractReadableText(lastUser);
+    const lastExplicitUser = findLastTextBySelectors(explicitUserSelectors);
+    if (lastExplicitUser) {
+      return lastExplicitUser;
+    }
+
+    return findGenericPrompt(sourceElement);
   }
 
   function findGeminiPrompt(sourceElement) {
@@ -755,6 +836,21 @@
       current = current.previousElementSibling;
     }
     return null;
+  }
+
+  function findPreviousSiblingTextBySelectors(startElement, selectors) {
+    let current = startElement.previousElementSibling;
+    while (current) {
+      for (const selector of selectors) {
+        const match = current.matches(selector) ? current : current.querySelector(selector);
+        const text = extractReadableText(match || current);
+        if (text) {
+          return text;
+        }
+      }
+      current = current.previousElementSibling;
+    }
+    return '';
   }
 
   function findPreviousTextBlock(startElement) {
@@ -890,17 +986,31 @@
     }
     const clone = element.cloneNode(true);
     if (clone instanceof Element) {
-      clone.querySelectorAll('.imh-inline-action-row').forEach((el) => el.remove());
+      clone
+        .querySelectorAll(
+          '.imh-inline-action-row, button, [role="button"], nav, svg, path, script, style'
+        )
+        .forEach((el) => el.remove());
     }
     const text = ((clone instanceof HTMLElement ? clone.innerText : element.innerText) || '').trim();
-    if (!text || text.length < 8) {
+    if (!text) {
       return '';
     }
-    const cleaned = text.replace(/\s+/g, ' ');
-    if (isLikelyUiText(cleaned)) {
+    const cleaned = cleanExtractedText(text);
+    if (!cleaned || cleaned.length < 8) {
       return '';
     }
     return cleaned;
+  }
+
+  function cleanExtractedText(text) {
+    const lines = String(text || '')
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !isLikelyUiLine(line));
+
+    return lines.join(' ').replace(/\s+/g, ' ').trim();
   }
 
   async function fetchImageBlobViaBackground(imageUrl) {
@@ -949,6 +1059,53 @@
       'download'
     ];
     return badFragments.some((fragment) => lower.includes(fragment));
+  }
+
+  function isLikelyUiLine(text) {
+    const normalized = normalizeTextForMatch(text);
+    if (!normalized) {
+      return true;
+    }
+
+    const exactMatches = new Set([
+      'save to metahub',
+      'save',
+      'edit',
+      'copy',
+      'share',
+      'report',
+      'download',
+      'like',
+      'dislike',
+      'retry',
+      'try again',
+      'regenerate',
+      'good response',
+      'bad response',
+      'copy prompt',
+      'copy raw metadata',
+      'show in folder',
+      'add to compare'
+    ]);
+
+    if (exactMatches.has(normalized)) {
+      return true;
+    }
+
+    return normalized.length <= 24 && isLikelyUiText(normalized);
+  }
+
+  function findLastTextBySelectors(selectors) {
+    for (const selector of selectors) {
+      const matches = Array.from(document.querySelectorAll(selector));
+      for (let index = matches.length - 1; index >= 0; index -= 1) {
+        const text = extractReadableText(matches[index]);
+        if (text) {
+          return text;
+        }
+      }
+    }
+    return '';
   }
 
   function saveSidecar(baseName, metadata) {

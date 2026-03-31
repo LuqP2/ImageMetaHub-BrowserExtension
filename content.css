@@ -11,6 +11,7 @@
 
 .imh-inline-action-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   margin-top: 8px;
   gap: 6px;
@@ -26,6 +27,7 @@
   padding: 6px 10px;
   border-radius: 999px;
   cursor: pointer;
+  white-space: nowrap;
   opacity: 0.82;
   backdrop-filter: blur(10px);
   transition:

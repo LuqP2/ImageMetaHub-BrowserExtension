@@ -1,6 +1,7 @@
 (() => {
   const INLINE_ACTION_ATTR = 'data-imh-save-action';
   const MESSAGE_HOST_ATTR = 'data-imh-save-host';
+  const GALLERY_ACTION_ATTR = 'data-imh-gallery-action';
   const PRIMARY_ACTION_LABEL = 'Save to MetaHub';
   const BROWSER_METADATA_CHUNK_KEY = 'imh_browser_data';
   const DEFAULT_SETTINGS = {
@@ -31,6 +32,11 @@
   function refreshInlineActions() {
     const messageContainers = collectAssistantMessagesWithImages();
     messageContainers.forEach((messageEl) => ensureInlineAction(messageEl));
+
+    if (isChatGptImagesPage()) {
+      const galleryHosts = collectStandaloneImageHosts();
+      galleryHosts.forEach((hostEl) => ensureGalleryAction(hostEl));
+    }
   }
 
   function collectAssistantMessagesWithImages() {
@@ -134,7 +140,108 @@
     const row = document.createElement('div');
     row.className = 'imh-inline-action-row';
     row.setAttribute(INLINE_ACTION_ATTR, 'true');
+    appendActionButtons(row, () => findBestImageContextInMessage(messageEl) || imageContext);
+    messageEl.appendChild(row);
+  }
 
+  function collectStandaloneImageHosts() {
+    const hosts = new Set();
+
+    document.querySelectorAll('img').forEach((img) => {
+      if (!(img instanceof HTMLImageElement) || !isLikelyImageCandidate(img)) {
+        return;
+      }
+
+      if (findAssistantMessageContainer(img)) {
+        return;
+      }
+
+      const host = findStandaloneImageHost(img);
+      if (host) {
+        hosts.add(host);
+      }
+    });
+
+    return Array.from(hosts);
+  }
+
+  function findStandaloneImageHost(element) {
+    if (!element || !(element instanceof Element)) {
+      return null;
+    }
+
+    const selectors = [
+      '[data-testid*="image"]',
+      '[data-testid*="asset"]',
+      '[data-testid*="media"]',
+      '[role="listitem"]',
+      'figure',
+      'article',
+      'li',
+      'a',
+      'button'
+    ];
+
+    for (const selector of selectors) {
+      const match = element.closest(selector);
+      if (match instanceof HTMLElement && match !== document.body && match !== document.documentElement) {
+        return normalizeActionHost(match);
+      }
+    }
+
+    let current = element.parentElement;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const rect = current.getBoundingClientRect();
+      if (rect.width >= 160 && rect.height >= 160 && rect.width < window.innerWidth * 0.98) {
+        return normalizeActionHost(current);
+      }
+      current = current.parentElement;
+    }
+
+    return element.parentElement instanceof HTMLElement ? normalizeActionHost(element.parentElement) : null;
+  }
+
+  function normalizeActionHost(host) {
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    if ((host.tagName === 'A' || host.tagName === 'BUTTON') && host.parentElement instanceof HTMLElement) {
+      return host.parentElement;
+    }
+
+    return host;
+  }
+
+  function ensureGalleryAction(hostEl) {
+    if (!(hostEl instanceof HTMLElement)) {
+      return;
+    }
+
+    const existing = hostEl.querySelector(`[${GALLERY_ACTION_ATTR}="true"]`);
+    if (existing) {
+      return;
+    }
+
+    const imageContext = findBestImageContextInMessage(hostEl);
+    if (!imageContext) {
+      return;
+    }
+
+    hostEl.classList.add('imh-image-host');
+    const computedStyle = window.getComputedStyle(hostEl);
+    if (computedStyle.position === 'static') {
+      hostEl.style.position = 'relative';
+    }
+
+    const row = document.createElement('div');
+    row.className = 'imh-inline-action-row imh-inline-action-row--overlay';
+    row.setAttribute(GALLERY_ACTION_ATTR, 'true');
+    appendActionButtons(row, () => findBestImageContextInMessage(hostEl) || imageContext);
+    hostEl.appendChild(row);
+  }
+
+  function appendActionButtons(row, getImageContext) {
     const saveButton = document.createElement('button');
     saveButton.type = 'button';
     saveButton.className = 'imh-inline-action imh-inline-action--primary';
@@ -144,9 +251,9 @@
       event.preventDefault();
       event.stopPropagation();
 
-      const latestImageContext = findBestImageContextInMessage(messageEl) || imageContext;
+      const latestImageContext = getImageContext();
       if (!latestImageContext) {
-        showToast('No image found in this message');
+        showToast('No image found in this item');
         return;
       }
 
@@ -162,9 +269,9 @@
       event.preventDefault();
       event.stopPropagation();
 
-      const latestImageContext = findBestImageContextInMessage(messageEl) || imageContext;
+      const latestImageContext = getImageContext();
       if (!latestImageContext) {
-        showToast('No image found in this message');
+        showToast('No image found in this item');
         return;
       }
 
@@ -173,7 +280,6 @@
 
     row.appendChild(saveButton);
     row.appendChild(editButton);
-    messageEl.appendChild(row);
   }
 
   function findAssistantMessageContainer(element) {
@@ -422,6 +528,10 @@
     return match ? match[1] : '';
   }
 
+  function isChatGptImagesPage() {
+    return inferProvider() === 'ChatGPT' && /^\/images(?:\/|$)/i.test(window.location.pathname);
+  }
+
   function inferPromptStrategy(provider) {
     if (provider === 'ChatGPT') {
       return 'chatgpt.previous_user_message';
@@ -601,15 +711,7 @@
 
       if (isPngBlob(blob)) {
         const buffer = await blob.arrayBuffer();
-        const parameters = buildParametersString(metadata);
-        const metadataChunks = [{ type: 'tEXt', keyword: 'parameters', text: parameters }];
-        if (metadata.include_rich_metadata !== false) {
-          metadataChunks.push({
-            type: 'iTXt',
-            keyword: BROWSER_METADATA_CHUNK_KEY,
-            text: JSON.stringify(buildRichMetadataEnvelope(metadata), null, 2)
-          });
-        }
+        const metadataChunks = buildTextMetadataChunks(metadata);
         const embedded = embedPngMetadataChunks(buffer, metadataChunks);
         const outBlob = new Blob([embedded], { type: 'image/png' });
         triggerDownload(URL.createObjectURL(outBlob), `${baseName}.png`, true);
@@ -742,6 +844,13 @@
   }
 
   function findChatGptPrompt(sourceElement) {
+    if (isChatGptImagesPage()) {
+      const imagesPrompt = findChatGptImagesPrompt(sourceElement);
+      if (imagesPrompt) {
+        return imagesPrompt;
+      }
+    }
+
     const explicitUserSelectors = [
       '[data-message-author-role="user"]',
       '[data-testid*="conversation-turn-user"]',
@@ -778,6 +887,37 @@
     }
 
     return findGenericPrompt(sourceElement);
+  }
+
+  function findChatGptImagesPrompt(sourceElement) {
+    if (!sourceElement || !(sourceElement instanceof Element)) {
+      return '';
+    }
+
+    const imageEl = sourceElement instanceof HTMLImageElement
+      ? sourceElement
+      : sourceElement.querySelector('img');
+    const altText = cleanExtractedText(
+      imageEl instanceof HTMLImageElement ? imageEl.getAttribute('alt') || '' : ''
+    );
+    if (altText && !isLikelyUiLine(altText)) {
+      return altText;
+    }
+
+    const host = findStandaloneImageHost(sourceElement);
+    if (host) {
+      const hostText = extractReadableText(host);
+      if (hostText) {
+        return hostText;
+      }
+
+      const nearbyText = findPreviousTextBlock(host);
+      if (nearbyText) {
+        return nearbyText;
+      }
+    }
+
+    return '';
   }
 
   function findGeminiPrompt(sourceElement) {
@@ -1092,6 +1232,10 @@
       return true;
     }
 
+    if (/^\d{1,2}\/\d{1,2}\/\d{2,4},?\s+\d{1,2}:\d{2}(?::\d{2})?\s*(am|pm)?$/i.test(text.trim())) {
+      return true;
+    }
+
     return normalized.length <= 24 && isLikelyUiText(normalized);
   }
 
@@ -1140,7 +1284,7 @@
 
   function buildParametersString(metadata) {
     const prompt = metadata.prompt || '';
-    const negative = metadata.negative_prompt || '';
+    const negative = metadata.negative_prompt || metadata.negativePrompt || '';
     const params = [];
 
     if (metadata.steps) {
@@ -1173,6 +1317,27 @@
       lines.push(params.join(', '));
     }
     return lines.filter(Boolean).join('\n');
+  }
+
+  function buildTextMetadataChunks(metadata) {
+    const parameters = buildParametersString(metadata);
+    const chunks = [{ type: 'tEXt', keyword: 'parameters', text: parameters }];
+    const prompt = String(metadata.prompt || '').trim();
+
+    if (prompt) {
+      chunks.push({ type: 'tEXt', keyword: 'prompt', text: prompt });
+      chunks.push({ type: 'tEXt', keyword: 'Description', text: prompt });
+    }
+
+    if (metadata.include_rich_metadata !== false) {
+      chunks.push({
+        type: 'iTXt',
+        keyword: BROWSER_METADATA_CHUNK_KEY,
+        text: JSON.stringify(buildRichMetadataEnvelope(metadata), null, 2)
+      });
+    }
+
+    return chunks;
   }
 
   function buildRichMetadataEnvelope(metadata) {

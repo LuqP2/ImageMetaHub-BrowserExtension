@@ -17,6 +17,19 @@
   gap: 6px;
 }
 
+.imh-inline-action-row--overlay {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2147483646;
+  margin-top: 0;
+}
+
+.imh-image-host:hover .imh-inline-action-row--overlay,
+.imh-image-host:focus-within .imh-inline-action-row--overlay {
+  opacity: 1;
+}
+
 .imh-inline-action {
   border: 1px solid rgba(255, 191, 60, 0.25);
   background: rgba(18, 23, 43, 0.72);
@@ -34,6 +47,10 @@
     opacity 0.16s ease,
     border-color 0.16s ease,
     background 0.16s ease;
+}
+
+.imh-inline-action-row--overlay .imh-inline-action {
+  opacity: 0.94;
 }
 
 .imh-inline-action:hover {
@@ -147,6 +164,11 @@
 @media (max-width: 640px) {
   .imh-inline-action-row {
     margin-top: 6px;
+  }
+
+  .imh-inline-action-row--overlay {
+    right: 8px;
+    bottom: 8px;
   }
 
   .imh-modal__grid {

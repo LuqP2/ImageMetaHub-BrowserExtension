@@ -10,7 +10,9 @@
     "https://lh3.googleusercontent.com/*",
     "https://lh3.google.com/*",
     "https://grok.com/*",
-    "https://x.ai/*"
+    "https://*.grok.com/*",
+    "https://x.ai/*",
+    "https://*.x.ai/*"
   ],
   "permissions": ["downloads", "storage"],
   "action": {

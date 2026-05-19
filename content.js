@@ -125,17 +125,28 @@
       return;
     }
 
-    const existing = messageEl.querySelector(`[${INLINE_ACTION_ATTR}="true"]`);
-    if (existing) {
-      return;
-    }
-
+    const provider = inferProvider();
     const imageContext = findBestImageContextInMessage(messageEl);
     if (!imageContext) {
       return;
     }
 
+    const inlineActionHost = getInlineActionHost(messageEl, imageContext, provider);
+    const existing = inlineActionHost.querySelector(`[${INLINE_ACTION_ATTR}="true"]`);
+    if (existing) {
+      return;
+    }
+
     messageEl.setAttribute(MESSAGE_HOST_ATTR, 'true');
+
+    if (inlineActionHost !== messageEl) {
+      attachOverlayActionRow(
+        inlineActionHost,
+        INLINE_ACTION_ATTR,
+        () => findBestImageContextInMessage(messageEl) || imageContext
+      );
+      return;
+    }
 
     const row = document.createElement('div');
     row.className = 'imh-inline-action-row';
@@ -228,6 +239,25 @@
       return;
     }
 
+    attachOverlayActionRow(
+      hostEl,
+      GALLERY_ACTION_ATTR,
+      () => findBestImageContextInMessage(hostEl) || imageContext
+    );
+  }
+
+  function getInlineActionHost(messageEl, imageContext, provider) {
+    if (provider === 'Grok') {
+      const imageHost = findStandaloneImageHost(imageContext.sourceElement);
+      if (imageHost instanceof HTMLElement) {
+        return imageHost;
+      }
+    }
+
+    return messageEl;
+  }
+
+  function attachOverlayActionRow(hostEl, attrName, getImageContext) {
     hostEl.classList.add('imh-image-host');
     const computedStyle = window.getComputedStyle(hostEl);
     if (computedStyle.position === 'static') {
@@ -236,17 +266,22 @@
 
     const row = document.createElement('div');
     row.className = 'imh-inline-action-row imh-inline-action-row--overlay';
-    row.setAttribute(GALLERY_ACTION_ATTR, 'true');
-    appendActionButtons(row, () => findBestImageContextInMessage(hostEl) || imageContext);
+    row.setAttribute(attrName, 'true');
+    appendActionButtons(row, getImageContext);
     hostEl.appendChild(row);
   }
 
   function appendActionButtons(row, getImageContext) {
+    const provider = inferProvider();
+    const prefersMetadataModal = shouldOpenMetadataModalByDefault(provider);
+    row.dataset.imhProvider = provider.toLowerCase();
     const saveButton = document.createElement('button');
     saveButton.type = 'button';
     saveButton.className = 'imh-inline-action imh-inline-action--primary';
     saveButton.textContent = PRIMARY_ACTION_LABEL;
-    saveButton.title = 'Quick save image to MetaHub';
+    saveButton.title = prefersMetadataModal
+      ? 'Review metadata before saving'
+      : 'Quick save image to MetaHub';
     saveButton.addEventListener('click', async (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -257,29 +292,41 @@
         return;
       }
 
-      await quickSaveImage(latestImageContext);
-    });
-
-    const editButton = document.createElement('button');
-    editButton.type = 'button';
-    editButton.className = 'imh-inline-action imh-inline-action--secondary';
-    editButton.textContent = 'Edit';
-    editButton.title = 'Review metadata before saving';
-    editButton.addEventListener('click', async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      const latestImageContext = getImageContext();
-      if (!latestImageContext) {
-        showToast('No image found in this item');
+      if (prefersMetadataModal) {
+        await openMetadataModal(latestImageContext);
         return;
       }
 
-      await openMetadataModal(latestImageContext);
+      await quickSaveImage(latestImageContext);
     });
 
     row.appendChild(saveButton);
-    row.appendChild(editButton);
+
+    if (!prefersMetadataModal) {
+      const editButton = document.createElement('button');
+      editButton.type = 'button';
+      editButton.className = 'imh-inline-action imh-inline-action--secondary';
+      editButton.textContent = 'Edit';
+      editButton.title = 'Review metadata before saving';
+      editButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const latestImageContext = getImageContext();
+        if (!latestImageContext) {
+          showToast('No image found in this item');
+          return;
+        }
+
+        await openMetadataModal(latestImageContext);
+      });
+
+      row.appendChild(editButton);
+    }
+  }
+
+  function shouldOpenMetadataModalByDefault(provider) {
+    return provider === 'Grok';
   }
 
   function findAssistantMessageContainer(element) {
@@ -941,6 +988,30 @@
   }
 
   function findGrokPrompt(sourceElement) {
+    const promptFromConversation = findGrokConversationPrompt(sourceElement);
+    if (promptFromConversation) {
+      return promptFromConversation;
+    }
+
+    const promptFromInputs = findGrokPromptFromInputs(sourceElement);
+    if (promptFromInputs) {
+      return promptFromInputs;
+    }
+
+    const promptFromAttributes = findGrokPromptFromImageAttributes(sourceElement);
+    if (promptFromAttributes) {
+      return promptFromAttributes;
+    }
+
+    const promptFromNearbyPromptBlocks = findGrokPromptFromNearbyPromptBlocks(sourceElement);
+    if (promptFromNearbyPromptBlocks) {
+      return promptFromNearbyPromptBlocks;
+    }
+
+    return findGenericPrompt(sourceElement);
+  }
+
+  function findGrokConversationPrompt(sourceElement) {
     const message =
       sourceElement.closest('[data-testid*="assistant"]') ||
       sourceElement.closest('article') ||
@@ -960,7 +1031,138 @@
       }
     }
 
-    return findGenericPrompt(sourceElement);
+    return '';
+  }
+
+  function findGrokPromptFromInputs(sourceElement) {
+    const roots = collectPromptSearchRoots(sourceElement);
+    const preferredSelectors = [
+      'textarea[placeholder*="prompt" i]',
+      'textarea[placeholder*="describe" i]',
+      'textarea[placeholder*="imagine" i]',
+      'textarea[aria-label*="prompt" i]',
+      'textarea[aria-label*="describe" i]',
+      'textarea[aria-label*="imagine" i]',
+      'input[type="text"][placeholder*="prompt" i]',
+      'input[type="text"][placeholder*="describe" i]',
+      'input[type="text"][placeholder*="imagine" i]',
+      'input[type="text"][aria-label*="prompt" i]',
+      'input[type="text"][aria-label*="describe" i]',
+      'input[type="text"][aria-label*="imagine" i]',
+      '[contenteditable="true"][aria-label*="prompt" i]',
+      '[contenteditable="true"][aria-label*="describe" i]',
+      '[contenteditable="true"][aria-label*="imagine" i]',
+      '[role="textbox"][aria-label*="prompt" i]',
+      '[role="textbox"][aria-label*="describe" i]',
+      '[role="textbox"][aria-label*="imagine" i]'
+    ];
+    const fallbackSelectors = ['textarea', 'input[type="text"]', '[contenteditable="true"]', '[role="textbox"]'];
+
+    const preferredPrompt = findPromptInRoots(roots, preferredSelectors);
+    if (preferredPrompt) {
+      return preferredPrompt;
+    }
+
+    return findPromptInRoots(roots, fallbackSelectors);
+  }
+
+  function findGrokPromptFromImageAttributes(sourceElement) {
+    const imageEl =
+      sourceElement instanceof HTMLImageElement
+        ? sourceElement
+        : sourceElement.querySelector('img') || sourceElement.closest('img');
+    const elements = [imageEl, findStandaloneImageHost(sourceElement), sourceElement];
+    const attributes = ['alt', 'title', 'aria-label', 'data-prompt', 'data-description', 'data-caption'];
+
+    for (const element of elements) {
+      if (!(element instanceof Element)) {
+        continue;
+      }
+
+      for (const attribute of attributes) {
+        const text = cleanExtractedText(element.getAttribute(attribute) || '');
+        if (text && !isLikelyUiLine(text)) {
+          return text;
+        }
+      }
+    }
+
+    return '';
+  }
+
+  function findGrokPromptFromNearbyPromptBlocks(sourceElement) {
+    const roots = collectPromptSearchRoots(sourceElement);
+    const selectors = [
+      '[data-testid*="prompt"]',
+      '[data-testid*="query"]',
+      '[data-testid*="composer"]',
+      '[aria-label*="prompt" i]',
+      '[aria-label*="query" i]',
+      '[aria-label*="imagine" i]',
+      '[placeholder*="prompt" i]',
+      '[placeholder*="describe" i]',
+      '[placeholder*="imagine" i]'
+    ];
+
+    return findPromptInRoots(roots, selectors, false);
+  }
+
+  function collectPromptSearchRoots(sourceElement) {
+    const roots = [];
+    addUniqueElement(roots, findAssistantMessageContainer(sourceElement));
+    addUniqueElement(roots, sourceElement.closest('[data-testid*="assistant"]'));
+    addUniqueElement(roots, findStandaloneImageHost(sourceElement));
+    addUniqueElement(roots, sourceElement.closest('[role="dialog"]'));
+    addUniqueElement(roots, sourceElement.closest('form'));
+    addUniqueElement(roots, sourceElement.closest('section'));
+    addUniqueElement(roots, sourceElement.closest('article'));
+    addUniqueElement(roots, document.body);
+    return roots;
+  }
+
+  function addUniqueElement(target, element) {
+    if (element instanceof Element && !target.includes(element)) {
+      target.push(element);
+    }
+  }
+
+  function findPromptInRoots(roots, selectors, valueOnly = true) {
+    for (const root of roots) {
+      for (const selector of selectors) {
+        const matches = root.querySelectorAll(selector);
+        for (const match of matches) {
+          const text = valueOnly ? extractTextInputValue(match) : extractPromptLikeText(match);
+          if (text) {
+            return text;
+          }
+        }
+      }
+    }
+
+    return '';
+  }
+
+  function extractTextInputValue(element) {
+    if (!(element instanceof HTMLElement)) {
+      return '';
+    }
+
+    const value = 'value' in element && typeof element.value === 'string' ? element.value : '';
+    return extractPromptLikeText(value || element);
+  }
+
+  function extractPromptLikeText(source) {
+    const rawText =
+      typeof source === 'string'
+        ? source
+        : source instanceof HTMLElement
+          ? source.innerText || source.textContent || ''
+          : '';
+    const text = cleanExtractedText(rawText);
+    if (!text || text.length < 8 || isLikelyUiLine(text)) {
+      return '';
+    }
+    return text;
   }
 
   function findGenericPrompt(sourceElement) {

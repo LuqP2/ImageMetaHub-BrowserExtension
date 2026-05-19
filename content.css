@@ -25,6 +25,13 @@
   margin-top: 0;
 }
 
+.imh-inline-action-row--overlay[data-imh-provider="grok"] {
+  top: 10px;
+  right: 10px;
+  bottom: auto;
+  left: auto;
+}
+
 .imh-image-host:hover .imh-inline-action-row--overlay,
 .imh-image-host:focus-within .imh-inline-action-row--overlay {
   opacity: 1;
@@ -169,6 +176,13 @@
   .imh-inline-action-row--overlay {
     right: 8px;
     bottom: 8px;
+  }
+
+  .imh-inline-action-row--overlay[data-imh-provider="grok"] {
+    top: 8px;
+    right: 8px;
+    bottom: auto;
+    left: auto;
   }
 
   .imh-modal__grid {

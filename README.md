@@ -7,6 +7,7 @@ A minimal MV3 browser extension that saves online AI images with embedded MetaHu
 - Adds a discreet `Save` action to assistant messages that contain generated images
 - `Save` performs a quick save with autodetected metadata and stored defaults
 - `Edit` opens a lightweight metadata form when you want to review fields before download
+- On Grok, `Save to MetaHub` opens the metadata form directly so the prompt can be reviewed before export
 - Lets you save the main image from that message and download:
   - `imh-<provider>-<timestamp>.png` with embedded `tEXt` metadata
 - Uses a simplified metadata form focused on fields that make sense for LLM image chats

@@ -8,3 +8,9 @@
 - added ChatGPT and Grok prompt/model autodetection heuristics
 - added richer PNG metadata via `imagemetahub_data` iTXt payload plus richer JSON sidecars
 - added extension settings for provider/model fallback, filename prefix, sidecar fallback, and rich metadata embedding
+
+## Unreleased
+
+- changed Grok inline save to open the metadata modal directly instead of using quick save
+- expanded Grok prompt autodetection to also inspect nearby prompt inputs and prompt-like blocks
+- added `*.grok.com` and `*.x.ai` host permissions for image fetches served from subdomains

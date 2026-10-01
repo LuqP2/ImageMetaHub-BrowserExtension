@@ -143,7 +143,10 @@
       // A combined turn can also contain user-uploaded reference images.
       if (provider === 'ChatGPT' && message && !isChatGptGeneratedImage(img, message)) return;
       if (provider === 'Gemini' && !img.closest('model-response, [data-test-id="conversation-turn-model"], [data-response-id]')) return;
-      const host = img.closest('[data-testid="generated-image-preview"]')?.parentElement || img.parentElement;
+      // Galleries clip their contents to the image height. Put normal-flow
+      // controls after the gallery, not below the image inside its preview.
+      const gallery = provider === 'ChatGPT' ? img.closest('[data-testid="generated-image-gallery"]') : null;
+      const host = gallery?.parentElement || img.closest('[data-testid="generated-image-preview"]')?.parentElement || img.parentElement;
       if (!(host instanceof HTMLElement)) return;
       let row = Array.from(host.children).find((child) => child.getAttribute(INLINE_ACTION_ATTR) === 'true' && child._imhImage === img);
       if (row) return;
@@ -154,7 +157,13 @@
       appendActionButtons(row, () => img.isConnected ? buildImageContextFromImg(img) : null);
       // Never nest our interactive controls inside the site's image button/link.
       const interactive = host.closest('button, a, [role="button"]');
-      if (interactive) {
+      if (gallery && !interactive) {
+        let anchor = gallery;
+        while (anchor.nextElementSibling?.getAttribute(INLINE_ACTION_ATTR) === 'true') {
+          anchor = anchor.nextElementSibling;
+        }
+        host.insertBefore(row, anchor.nextSibling);
+      } else if (interactive) {
         const parent = interactive.parentElement;
         if (!parent) return;
         const existing = Array.from(parent.children).find((child) => child._imhImage === img);

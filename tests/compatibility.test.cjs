@@ -28,6 +28,11 @@ test('new turns: one action per generated image, outside native buttons; refresh
   api.refreshInlineActions();
   assert.equal(d.querySelectorAll('[data-imh-save-action]').length, 3);
   assert.equal(d.querySelectorAll('button [data-imh-save-action]').length, 0);
+  // Real galleries have a fixed image height and overflow:hidden. Controls
+  // below a preview inside that gallery would exist in the DOM but be clipped.
+  assert.equal(d.querySelectorAll('[data-testid="generated-image-gallery"] [data-imh-save-action]').length, 0);
+  const firstTurnRows = d.querySelector('[data-turn-key="a"]').querySelectorAll('[data-imh-save-action]');
+  assert.deepEqual(Array.from(firstTurnRows, row => row._imhImage.id), ['a1', 'a2']);
   assert.equal(api.findChatGptPrompt(d.getElementById('a2')), 'Invent a silver clock');
   assert.equal(api.findChatGptPrompt(d.getElementById('b1')), 'Try a blue frame');
   dom.window.close();

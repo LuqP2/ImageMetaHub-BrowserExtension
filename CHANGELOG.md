@@ -12,6 +12,7 @@
 ## Unreleased
 
 - restored ChatGPT image actions for the current turn/gallery markup, with one action per generated image and compatibility with older conversation turns
+- placed ChatGPT controls outside the gallery so its fixed height and clipping cannot hide the buttons
 - associated ChatGPT and Gemini prompts with the corresponding response instead of the last request on the page
 - removed structural speaker labels from prompts while preserving paragraphs, lists, and short requests
 - stopped inferring the image model from ChatGPT's chat-model selector

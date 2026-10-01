@@ -1,0 +1,11 @@
+{
+  "name": "imagemetahub-browser-extension",
+  "version": "0.1.1",
+  "private": true,
+  "scripts": {
+    "test": "node tests/compatibility.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "27.0.0"
+  }
+}

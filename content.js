@@ -16,20 +16,29 @@
   let refreshQueued = false;
   let settingsCache = { ...DEFAULT_SETTINGS };
   let settingsPromise = null;
+  const dirtyRoots = new Set();
 
-  function queueInlineActionRefresh() {
+  function queueInlineActionRefresh(root = document) {
+    dirtyRoots.add(root instanceof Element ? root : document);
     if (refreshQueued) {
       return;
     }
 
     refreshQueued = true;
-    window.requestAnimationFrame(() => {
+    window.setTimeout(() => {
       refreshQueued = false;
-      refreshInlineActions();
-    });
+      const roots = Array.from(dirtyRoots).filter((scope, index, all) => !all.some((other, otherIndex) => otherIndex !== index && other.contains(scope)));
+      dirtyRoots.clear();
+      roots.forEach((scope) => refreshInlineActions(scope));
+    }, 100);
   }
 
-  function refreshInlineActions() {
+  function refreshInlineActions(scope = document) {
+    const provider = inferProvider();
+    if (provider === 'ChatGPT' || provider === 'Gemini') {
+      ensureImageActions(scope, provider);
+      return;
+    }
     const messageContainers = collectAssistantMessagesWithImages();
     messageContainers.forEach((messageEl) => ensureInlineAction(messageEl));
 
@@ -74,22 +83,23 @@
 
   function collectProviderMessageCandidates(provider) {
     const selectors = getAssistantMessageSelectors(provider);
+    const candidates = new Set();
 
     for (const selector of selectors) {
       const matches = Array.from(document.querySelectorAll(selector)).filter(
         (element) => element instanceof HTMLElement
       );
-      if (matches.length) {
-        return matches;
-      }
+      if (provider === 'Grok' && matches.length) return matches;
+      matches.forEach((element) => candidates.add(element));
     }
 
-    return [];
+    return Array.from(candidates);
   }
 
   function getAssistantMessageSelectors(provider) {
     if (provider === 'ChatGPT') {
       return [
+        '[data-turn-key]',
         '[data-message-author-role="assistant"]',
         '[data-testid*="conversation-turn-assistant"]',
         '[data-testid^="conversation-turn-"]',
@@ -118,6 +128,59 @@
     }
 
     return ['article', '[role="article"]', 'section'];
+  }
+
+  function ensureImageActions(scope, provider) {
+    scope.querySelectorAll(`[${INLINE_ACTION_ATTR}]`).forEach((row) => {
+      if (row._imhImage && !row._imhImage.isConnected) row.remove();
+    });
+    const images = Array.from(scope.querySelectorAll('img'));
+    if (scope instanceof HTMLImageElement) images.unshift(scope);
+    images.forEach((img) => {
+      if (!isLikelyImageCandidate(img)) return;
+      const message = findAssistantMessageContainer(img);
+      if (!message && !(provider === 'ChatGPT' && isChatGptImagesPage())) return;
+      // A combined turn can also contain user-uploaded reference images.
+      if (provider === 'ChatGPT' && message && !isChatGptGeneratedImage(img, message)) return;
+      if (provider === 'Gemini' && !img.closest('model-response, [data-test-id="conversation-turn-model"], [data-response-id]')) return;
+      // Galleries clip their contents to the image height. Put normal-flow
+      // controls after the gallery, not below the image inside its preview.
+      const gallery = provider === 'ChatGPT' ? img.closest('[data-testid="generated-image-gallery"]') : null;
+      const host = gallery?.parentElement || img.closest('[data-testid="generated-image-preview"]')?.parentElement || img.parentElement;
+      if (!(host instanceof HTMLElement)) return;
+      let row = Array.from(host.children).find((child) => child.getAttribute(INLINE_ACTION_ATTR) === 'true' && child._imhImage === img);
+      if (row) return;
+      row = document.createElement('div');
+      row.className = 'imh-inline-action-row';
+      row.setAttribute(INLINE_ACTION_ATTR, 'true');
+      row._imhImage = img;
+      appendActionButtons(row, () => img.isConnected ? buildImageContextFromImg(img) : null);
+      // Never nest our interactive controls inside the site's image button/link.
+      const interactive = host.closest('button, a, [role="button"]');
+      if (gallery && !interactive) {
+        let anchor = gallery;
+        while (anchor.nextElementSibling?.getAttribute(INLINE_ACTION_ATTR) === 'true') {
+          anchor = anchor.nextElementSibling;
+        }
+        host.insertBefore(row, anchor.nextSibling);
+      } else if (interactive) {
+        const parent = interactive.parentElement;
+        if (!parent) return;
+        const existing = Array.from(parent.children).find((child) => child._imhImage === img);
+        if (existing) return;
+        parent.insertBefore(row, interactive.nextSibling);
+      } else {
+        host.appendChild(row);
+      }
+    });
+  }
+
+  function isChatGptGeneratedImage(img, message) {
+    if (img.closest('[data-testid="generated-image-preview"], [data-testid="generated-image-gallery"]')) return true;
+    if (img.closest('[data-message-author-role="user"]')) return false;
+    if (img.closest('[data-message-author-role="assistant"], [data-testid*="conversation-turn-assistant"]')) return true;
+    const heading = Array.from(message.querySelectorAll('h4')).find((el) => /^ChatGPT said\s*:/i.test(el.textContent.trim()));
+    return Boolean(heading && (heading.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING));
   }
 
   function ensureInlineAction(messageEl) {
@@ -499,7 +562,7 @@
 
   async function quickSaveImage(imageContext) {
     const metadata = await buildMetadataFromContext(imageContext);
-    downloadWithMetadata(imageContext.imageUrl, metadata, Boolean(metadata.sidecar_fallback));
+    return downloadWithMetadata(imageContext.imageUrl, metadata, Boolean(metadata.sidecar_fallback));
   }
 
   async function buildMetadataFromContext(imageContext, overrides = {}) {
@@ -507,11 +570,11 @@
     const sourceElement = imageContext.sourceElement || null;
     const provider = overrides.provider || settings.defaultProvider || inferProvider();
     const prompt =
-      overrides.prompt !== undefined ? overrides.prompt : guessPromptText(sourceElement, provider);
+      overrides.prompt !== undefined ? overrides.prompt : guessPromptText(sourceElement, inferProvider());
     const model =
       overrides.model !== undefined
         ? overrides.model
-        : guessModelName(sourceElement, provider) || settings.defaultModel || '';
+        : guessModelName(sourceElement, inferProvider()) || settings.defaultModel || '';
     const width = overrides.width !== undefined ? overrides.width : imageContext.width || undefined;
     const height =
       overrides.height !== undefined ? overrides.height : imageContext.height || undefined;
@@ -737,12 +800,13 @@
       const extension = inferExtension(imageResult && imageResult.type, imageUrl);
 
       if (!imageResult || !imageResult.blob) {
-        downloadRemoteUrl(imageUrl, `${baseName}.${extension}`);
+        if (!/^https:/i.test(imageUrl)) throw new Error('Image bytes are unavailable in this page');
+        await downloadRemoteUrl(imageUrl, `${baseName}.${extension}`);
         if (sidecarFallback) {
-          saveSidecar(baseName, metadata);
+          await saveSidecar(baseName, metadata);
         }
-        showToast('Saved image (metadata unavailable: fetch blocked)');
-        return;
+        showToast(sidecarFallback ? 'Download completed; metadata saved in JSON sidecar' : 'Download completed without embedded metadata');
+        return { ok: true, embedded: false };
       }
 
       let blob = imageResult.blob;
@@ -757,58 +821,66 @@
       }
 
       if (isPngBlob(blob)) {
-        const buffer = await blob.arrayBuffer();
-        const metadataChunks = buildTextMetadataChunks(metadata);
-        const embedded = embedPngMetadataChunks(buffer, metadataChunks);
-        const outBlob = new Blob([embedded], { type: 'image/png' });
-        triggerDownload(URL.createObjectURL(outBlob), `${baseName}.png`, true);
-        showToast('Saved PNG with embedded metadata');
-        return;
+        let outBlob;
+        try {
+          const buffer = await blob.arrayBuffer();
+          const embedded = embedPngMetadataChunks(buffer, buildTextMetadataChunks(metadata));
+          outBlob = new Blob([embedded], { type: 'image/png' });
+        } catch (error) {
+          console.warn('[IMH] Metadata embedding failed', error);
+        }
+        if (outBlob) {
+          await downloadBlob(outBlob, `${baseName}.png`);
+          showToast('Download completed: PNG with embedded metadata');
+          return { ok: true, embedded: true };
+        }
       }
 
-      triggerDownload(URL.createObjectURL(blob), `${baseName}.${outputExtension}`, true);
+      await downloadBlob(blob, `${baseName}.${outputExtension}`);
       if (sidecarFallback) {
-        saveSidecar(baseName, metadata);
+        await saveSidecar(baseName, metadata);
       }
-      showToast('Saved image (non-PNG, metadata not embedded)');
+      showToast(sidecarFallback ? 'Download completed; metadata saved in JSON sidecar' : 'Download completed without embedded metadata');
+      return { ok: true, embedded: false };
     } catch (error) {
       console.warn('[IMH] Failed to save image', error);
       if (sidecarFallback) {
-        saveSidecar(buildBaseName(metadata), metadata);
+        try { await saveSidecar(buildBaseName(metadata), metadata); } catch { /* Report the image failure below. */ }
       }
-      showToast('Failed to save image');
+      showToast(`Download failed: ${error.message || 'Could not save image'}`);
+      return { ok: false, error: error.message || 'download-failed' };
     }
   }
 
-  function triggerDownload(url, filename, revoke) {
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.style.display = 'none';
-    const parent = document.body || document.documentElement;
-    if (!parent) {
-      return;
-    }
-    parent.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-
-    if (revoke) {
-      setTimeout(() => URL.revokeObjectURL(url), 1500);
-    }
-  }
-
-  function downloadRemoteUrl(url, filename) {
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({ type: 'download-url', url, filename }, () => {
-        if (chrome.runtime.lastError) {
-          console.warn('[IMH] download failed', chrome.runtime.lastError.message);
-          triggerDownload(url, filename, false);
-        }
+  function sendRuntimeMessage(message) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (response) => {
+        const error = chrome.runtime.lastError;
+        if (error || !response?.ok) reject(new Error(error?.message || response?.error || 'Extension did not respond'));
+        else resolve(response);
       });
-      return;
+    });
+  }
+
+  async function downloadRemoteUrl(url, filename) {
+    const { id } = await sendRuntimeMessage({ type: 'download-url', url, filename });
+    showToast('Download started');
+    for (;;) {
+      const status = await sendRuntimeMessage({ type: 'download-status', id });
+      if (status.state === 'complete') return id;
+      if (status.state === 'interrupted') throw new Error(status.error || 'Download interrupted');
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
     }
-    triggerDownload(url, filename, false);
+  }
+
+  async function downloadBlob(blob, filename) {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not read image bytes'));
+      reader.readAsDataURL(blob);
+    });
+    return downloadRemoteUrl(dataUrl, filename);
   }
 
   async function fetchImageBlob(imageUrl) {
@@ -826,13 +898,13 @@
           continue;
         }
         const blob = await response.blob();
-        return { blob, type: blob.type };
+        if (blob.type.startsWith('image/')) return { blob, type: blob.type };
       } catch {
         // Try next credential mode.
       }
     }
 
-    const backgroundResult = await fetchImageBlobViaBackground(imageUrl);
+    const backgroundResult = /^https:/i.test(imageUrl) ? await fetchImageBlobViaBackground(imageUrl) : null;
     if (backgroundResult) {
       return backgroundResult;
     }
@@ -867,10 +939,7 @@
 
     const provider = providerOverride || inferProvider();
     if (provider === 'ChatGPT') {
-      const prompt = findChatGptPrompt(sourceElement);
-      if (prompt) {
-        return prompt;
-      }
+      return findChatGptPrompt(sourceElement);
     }
 
     if (provider === 'Grok') {
@@ -881,110 +950,80 @@
     }
 
     if (provider === 'Gemini') {
-      const prompt = findGeminiPrompt(sourceElement);
-      if (prompt) {
-        return prompt;
-      }
+      return findGeminiPrompt(sourceElement);
     }
 
     return findGenericPrompt(sourceElement);
   }
 
   function findChatGptPrompt(sourceElement) {
-    if (isChatGptImagesPage()) {
-      const imagesPrompt = findChatGptImagesPrompt(sourceElement);
-      if (imagesPrompt) {
-        return imagesPrompt;
+    const turn = sourceElement.closest('[data-turn-key], [data-testid^="conversation-turn-"], article, [role="article"]');
+    const userSelector = '[data-message-author-role="user"], [data-testid*="conversation-turn-user"], [data-testid*="user-message"]';
+    if (turn) {
+      const user = turn.matches(userSelector) ? turn : turn.querySelector(userSelector);
+      if (user) return extractPromptText(user);
+      const headings = Array.from(turn.querySelectorAll('h4'));
+      const userHeading = headings.find((el) => /^You said\s*:/i.test(el.textContent.trim()));
+      const assistantHeading = headings.find((el) => /^ChatGPT said\s*:/i.test(el.textContent.trim()));
+      if (userHeading && assistantHeading) {
+        const range = document.createRange();
+        range.setStartAfter(userHeading);
+        range.setEndBefore(assistantHeading);
+        const fragment = document.createElement('div');
+        fragment.appendChild(range.cloneContents());
+        return extractPromptText(fragment);
       }
     }
-
-    const explicitUserSelectors = [
-      '[data-message-author-role="user"]',
-      '[data-testid*="conversation-turn-user"]',
-      '[data-testid*="user-message"]',
-      '[data-testid*="user"]'
-    ];
-    const message =
-      findClosestBySelectorPriority(sourceElement, getAssistantMessageSelectors('ChatGPT')) ||
-      sourceElement.closest('[data-message-author-role]');
-
-    if (message) {
-      const promptFromExplicitUser = findPreviousSiblingTextBySelectors(message, explicitUserSelectors);
-      if (promptFromExplicitUser) {
-        return promptFromExplicitUser;
-      }
-
-      const role = message.getAttribute('data-message-author-role');
-      if (role === 'user') {
-        const text = extractReadableText(message);
-        if (text) {
-          return text;
-        }
-      }
-
-      const promptFromNearbyBlock = findPreviousTextBlock(message);
-      if (promptFromNearbyBlock) {
-        return promptFromNearbyBlock;
-      }
-    }
-
-    const lastExplicitUser = findLastTextBySelectors(explicitUserSelectors);
-    if (lastExplicitUser) {
-      return lastExplicitUser;
-    }
-
-    return findGenericPrompt(sourceElement);
-  }
-
-  function findChatGptImagesPrompt(sourceElement) {
-    if (!sourceElement || !(sourceElement instanceof Element)) {
-      return '';
-    }
-
-    const imageEl = sourceElement instanceof HTMLImageElement
-      ? sourceElement
-      : sourceElement.querySelector('img');
-    const altText = cleanExtractedText(
-      imageEl instanceof HTMLImageElement ? imageEl.getAttribute('alt') || '' : ''
-    );
-    if (altText && !isLikelyUiLine(altText)) {
-      return altText;
-    }
-
-    const host = findStandaloneImageHost(sourceElement);
-    if (host) {
-      const hostText = extractReadableText(host);
-      if (hostText) {
-        return hostText;
-      }
-
-      const nearbyText = findPreviousTextBlock(host);
-      if (nearbyText) {
-        return nearbyText;
-      }
-    }
-
-    return '';
+    const message = turn || sourceElement.closest('[data-message-author-role="assistant"]');
+    if (!message) return '';
+    return findPreviousExplicitPrompt(message, userSelector);
   }
 
   function findGeminiPrompt(sourceElement) {
-    const selector = '.user-query-bubble-with-background .query-text';
-    const promptFromThread = findPreviousSelectorText(sourceElement, selector);
-    if (promptFromThread) {
-      return promptFromThread;
-    }
+    const response = sourceElement.closest('model-response, [data-test-id="conversation-turn-model"], [data-response-id]');
+    if (!response) return '';
+    const selector = '.query-text, user-query, [data-test-id="conversation-turn-user"]';
+    return findPreviousExplicitPrompt(response, selector);
+  }
 
-    const promptFromAncestor = findPreviousSelectorText(
-      sourceElement.closest('article') || sourceElement,
-      selector
-    );
-    if (promptFromAncestor) {
-      return promptFromAncestor;
+  function findPreviousExplicitPrompt(start, selector) {
+    let current = start;
+    for (let depth = 0; current && depth < 8; depth++, current = current.parentElement) {
+      let sibling = current.previousElementSibling;
+      while (sibling) {
+        const matches = sibling.matches(selector) ? [sibling] : Array.from(sibling.querySelectorAll(selector));
+        const match = matches[matches.length - 1];
+        if (match) return extractPromptText(match);
+        // Don't cross another assistant response with no corresponding request.
+        if (sibling.matches('model-response, [data-message-author-role="assistant"], [data-turn-key]')) return '';
+        sibling = sibling.previousElementSibling;
+      }
+      if (current.matches('main, body')) break;
     }
+    return '';
+  }
 
-    const all = document.querySelectorAll(selector);
-    const last = all[all.length - 1];
-    return extractReadableText(last);
+  function extractPromptText(element) {
+    if (!(element instanceof Element)) return '';
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll('.imh-inline-action-row, button, [role="button"], nav, svg, script, style, textarea, input, [contenteditable="true"], [aria-hidden="true"]').forEach((el) => el.remove());
+    clone.querySelectorAll('h1, h2, h3, h4, h5, h6, .sr-only, .visually-hidden, [role="heading"]').forEach((el) => {
+      if (/^(You said|ChatGPT said|Gemini said)\s*:?$/i.test(el.textContent.trim())) el.remove();
+    });
+    return readableBlockText(clone).replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function readableBlockText(root) {
+    function read(node) {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+      if (!(node instanceof Element)) return '';
+      if (node.tagName === 'BR') return '\n';
+      const text = Array.from(node.childNodes).map(read).join('');
+      if (node.tagName === 'LI') return `\n- ${text.trim()}\n`;
+      if (/^(P|DIV|SECTION|ARTICLE|H[1-6]|UL|OL|BLOCKQUOTE|PRE)$/.test(node.tagName)) return `\n${text}\n`;
+      return text;
+    }
+    return read(root).split('\n').map((line) => line.replace(/[\t ]+/g, ' ').trim()).join('\n');
   }
 
   function findGrokPrompt(sourceElement) {
@@ -1238,25 +1277,7 @@
     const provider = providerOverride || inferProvider();
 
     if (provider === 'ChatGPT') {
-      return findKnownModelName(
-        [
-          'button[data-testid*="model"]',
-          '[data-testid*="model-switcher"]',
-          'header button',
-          'nav button'
-        ],
-        sourceElement,
-        document.title,
-        [
-          'GPT-4o',
-          'GPT-4.1',
-          'GPT-4.5',
-          'GPT-Image-1',
-          'o4-mini',
-          'o3',
-          'o1'
-        ]
-      );
+      return '';
     }
 
     if (provider === 'Grok') {
@@ -1362,12 +1383,13 @@
 
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: 'fetch-image', url: imageUrl }, (response) => {
-        if (chrome.runtime.lastError || !response || !response.ok || !response.buffer) {
+        if (chrome.runtime.lastError || !response || !response.ok || !response.base64) {
           resolve(null);
           return;
         }
         const mimeType = response.type || inferMimeTypeFromUrl(imageUrl);
-        const blob = new Blob([response.buffer], { type: mimeType || undefined });
+        const bytes = Uint8Array.from(atob(response.base64), (char) => char.charCodeAt(0));
+        const blob = new Blob([bytes], { type: mimeType || undefined });
         resolve({ blob, type: mimeType || blob.type });
       });
     });
@@ -1458,7 +1480,7 @@
     const jsonFilename = `${baseName}.json`;
     const jsonPayload = JSON.stringify(buildRichMetadataEnvelope(metadata), null, 2);
     const jsonBlob = new Blob([jsonPayload], { type: 'application/json' });
-    triggerDownload(URL.createObjectURL(jsonBlob), jsonFilename, true);
+    return downloadBlob(jsonBlob, jsonFilename);
   }
 
   function isPngBlob(blob) {
@@ -1762,12 +1784,34 @@
   function boot() {
     loadSettings();
     queueInlineActionRefresh();
-    const observer = new MutationObserver(() => queueInlineActionRefresh());
+    const observer = new MutationObserver((mutations) => {
+      if (inferProvider() === 'Grok') {
+        queueInlineActionRefresh();
+        return;
+      }
+      for (const mutation of mutations) {
+        const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        if (!target || target.closest('.imh-inline-action-row, .imh-modal, .imh-toast')) continue;
+        const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+        if (changedNodes.length && changedNodes.every((node) => node instanceof Element && node.matches('.imh-inline-action-row, .imh-modal, .imh-toast'))) continue;
+        const message = target.closest('[data-turn-key], [data-testid^="conversation-turn-"], [data-message-author-role], model-response, [data-response-id], article');
+        if (message) queueInlineActionRefresh(message);
+        else {
+          mutation.addedNodes.forEach((node) => {
+            if (node instanceof Element && (node.matches('main') || node.closest('main'))) queueInlineActionRefresh(node);
+          });
+        }
+      }
+    });
     observer.observe(document.documentElement || document.body, {
       childList: true,
-      subtree: true
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src', 'srcset', 'width', 'height']
     });
-    document.addEventListener('load', queueInlineActionRefresh, true);
+    document.addEventListener('load', (event) => {
+      if (event.target instanceof HTMLImageElement) queueInlineActionRefresh(event.target.parentElement || event.target);
+    }, true);
     window.addEventListener('pageshow', queueInlineActionRefresh);
     if (chrome.storage && chrome.storage.onChanged) {
       chrome.storage.onChanged.addListener((changes, areaName) => {
